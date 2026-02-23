@@ -1,0 +1,19 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Secrets and env files — never commit
+secrets.txt
+.env
+*.env
+!*.env.example
+server/.env
+# Google service account key (if stored in repo folder)
+*-credentials.json
+*-service-account*.json
+keys/
+*.pem
+
+# OS and editor
+.DS_Store
+*.local

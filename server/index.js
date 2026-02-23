@@ -1,0 +1,247 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const { v2 } = require('@google-cloud/speech');
+const textToSpeech = require('@google-cloud/text-to-speech');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '1mb' }));
+
+const PORT = process.env.PORT || 3001;
+
+let speechClient;
+let ttsClient;
+let genAI;
+
+function getSpeechClient() {
+  if (!speechClient) {
+    speechClient = new v2.SpeechClient();
+  }
+  return speechClient;
+}
+
+function getTtsClient() {
+  if (!ttsClient) {
+    ttsClient = new textToSpeech.TextToSpeechClient();
+  }
+  return ttsClient;
+}
+
+function getGenAI() {
+  if (!genAI && process.env.GEMINI_API_KEY) {
+    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  }
+  return genAI;
+}
+
+async function getProjectId() {
+  const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  if (keyPath) {
+    try {
+      const key = require('fs').readFileSync(keyPath, 'utf8');
+      const parsed = JSON.parse(key);
+      return parsed.project_id;
+    } catch (_) {
+      // ignore
+    }
+  }
+  return process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+}
+
+const BURMESE_TO_ENGLISH_PROMPT =
+  'Translate this Burmese dialogue to natural English for an earbud feed. Output only the translation, no explanations.';
+const ENGLISH_TO_BURMESE_PROMPT =
+  'Translate this English dialogue to natural Burmese for a local speaker to hear. Output only the translation, no explanations.';
+
+async function transcribeWithChirp3(audioBuffer) {
+  const projectId = await getProjectId();
+  if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or GOOGLE_APPLICATION_CREDENTIALS with project_id');
+  const recognizer = `projects/${projectId}/locations/global/recognizers/_`;
+  const client = getSpeechClient();
+  const protos = require('@google-cloud/speech').protos;
+  const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
+  const [response] = await client.recognize({
+    recognizer,
+    config: {
+      model: 'chirp_3',
+      languageCodes: ['my-MM'],
+      explicitDecodingConfig: {
+        encoding: Encoding.LINEAR16,
+        sampleRateHertz: 16000,
+      },
+    },
+    content: audioBuffer,
+  });
+  const transcript = response?.results
+    ?.map((r) => r.alternatives?.[0]?.transcript)
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return transcript || '';
+}
+
+async function translateWithGemini(text, toEnglish = true) {
+  if (!text || typeof text !== 'string' || !text.trim()) return '';
+  const ai = getGenAI();
+  if (!ai) throw new Error('GEMINI_API_KEY not set');
+  const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const prompt = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
+  const result = await model.generateContent([{ role: 'user', parts: [{ text: `${prompt}\n\n${text.trim()}` }] }]);
+  const resp = result.response;
+  if (!resp || !resp.candidates || !resp.candidates[0]) {
+    const blockReason = resp?.candidates?.[0]?.finishReason ?? resp?.promptFeedback?.blockReason;
+    throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no text');
+  }
+  const part = resp.candidates[0].content?.parts?.[0];
+  return (part?.text || '').trim();
+}
+
+const TTS_MAX_BYTES = 4500; // Google TTS limit is 5000 bytes per request
+
+function truncateForTts(text) {
+  if (typeof text !== 'string') return '';
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  if (bytes.length <= TTS_MAX_BYTES) return text;
+  const truncated = new TextDecoder().decode(bytes.slice(0, TTS_MAX_BYTES));
+  const lastSpace = truncated.lastIndexOf(' ');
+  return lastSpace > TTS_MAX_BYTES / 2 ? truncated.slice(0, lastSpace) : truncated;
+}
+
+async function synthesizeSpeech(text, languageCode = 'en-US') {
+  const safeText = truncateForTts(text);
+  if (!safeText) return null;
+  const client = getTtsClient();
+  const lang = languageCode.startsWith('my') ? 'my-MM' : 'en-US';
+  const voiceName = languageCode.startsWith('my') ? 'my-MM-Standard-A' : 'en-US-Neural2-D';
+  try {
+    const [response] = await client.synthesizeSpeech({
+      input: { text: safeText },
+      voice: { languageCode: lang, name: voiceName },
+      audioConfig: {
+        audioEncoding: 'MP3',
+        sampleRateHertz: 24000,
+      },
+    });
+    return response.audioContent;
+  } catch (err) {
+    if (err.message && err.message.includes('voice')) {
+      const [fallback] = await client.synthesizeSpeech({
+        input: { text: safeText },
+        voice: { languageCode: lang },
+        audioConfig: { audioEncoding: 'MP3', sampleRateHertz: 24000 },
+      });
+      return fallback.audioContent;
+    }
+    throw err;
+  }
+}
+
+function toBuffer(body) {
+  if (Buffer.isBuffer(body)) return body;
+  if (body && typeof body === 'object' && body.byteLength !== undefined) {
+    return Buffer.from(body);
+  }
+  return null;
+}
+
+app.post('/api/interpret', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
+  try {
+    const audioBuffer = toBuffer(req.body);
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(400).json({ error: 'Request body must be raw audio bytes' });
+    }
+    const burmeseText = await transcribeWithChirp3(audioBuffer);
+    if (!burmeseText) {
+      return res.json({ burmeseText: '', englishText: '', audioBase64: null });
+    }
+    const englishText = await translateWithGemini(burmeseText, true);
+    const audioContent = await synthesizeSpeech(englishText, 'en-US');
+    res.json({
+      burmeseText,
+      englishText,
+      audioBase64: audioContent ? audioContent.toString('base64') : null,
+    });
+  } catch (err) {
+    console.error('/api/interpret', err);
+    res.status(500).json({ error: err.message || 'Interpret failed' });
+  }
+});
+
+app.post('/api/response', async (req, res) => {
+  try {
+    const { text } = req.body || {};
+    if (!text || typeof text !== 'string') {
+      return res.status(400).json({ error: 'Request body must include { text: string }' });
+    }
+    const burmeseText = await translateWithGemini(text, false);
+    const audioContent = await synthesizeSpeech(burmeseText, 'my-MM');
+    res.json({
+      burmeseText,
+      audioBase64: audioContent ? audioContent.toString('base64') : null,
+    });
+  } catch (err) {
+    console.error('/api/response', err);
+    res.status(500).json({ error: err.message || 'Response failed' });
+  }
+});
+
+async function transcribeEnglish(audioBuffer) {
+  const projectId = await getProjectId();
+  if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or credentials');
+  const recognizer = `projects/${projectId}/locations/global/recognizers/_`;
+  const client = getSpeechClient();
+  const protos = require('@google-cloud/speech').protos;
+  const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
+  const [response] = await client.recognize({
+    recognizer,
+    config: {
+      model: 'chirp_3',
+      languageCodes: ['en-US'],
+      explicitDecodingConfig: {
+        encoding: Encoding.LINEAR16,
+        sampleRateHertz: 16000,
+      },
+    },
+    content: audioBuffer,
+  });
+  const transcript = response?.results
+    ?.map((r) => r.alternatives?.[0]?.transcript)
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  return transcript || '';
+}
+
+app.post('/api/response-audio', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {
+  try {
+    const audioBuffer = toBuffer(req.body);
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(400).json({ error: 'Request body must be raw audio bytes' });
+    }
+    const englishText = await transcribeEnglish(audioBuffer);
+    if (!englishText) {
+      return res.json({ englishText: '', burmeseText: '', audioBase64: null });
+    }
+    const burmeseText = await translateWithGemini(englishText, false);
+    const audioContent = await synthesizeSpeech(burmeseText, 'my-MM');
+    res.json({
+      englishText,
+      burmeseText,
+      audioBase64: audioContent ? audioContent.toString('base64') : null,
+    });
+  } catch (err) {
+    console.error('/api/response-audio', err);
+    res.status(500).json({ error: err.message || 'Response audio failed' });
+  }
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server listening on http://localhost:${PORT}`);
+});

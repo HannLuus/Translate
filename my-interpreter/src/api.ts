@@ -2,7 +2,12 @@ import type { InterpretResult, ResponseResult } from './types';
 
 const API_BASE = (() => {
   const url = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL : '';
-  return url ? url.replace(/\/+$/, '') : '';
+  const base = url ? url.replace(/\/+$/, '') : '';
+  // Render backend is translate-u6u1 (digit 1). Typos ubul/u6ul do not resolve — force correct host.
+  if (base && (base.includes('ubul') || base.includes('u6ul'))) {
+    return base.replace(/translate-(ubul|u6ul)\.onrender\.com/, 'translate-u6u1.onrender.com');
+  }
+  return base;
 })();
 
 export function getApiBase(): string {

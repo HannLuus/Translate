@@ -4,6 +4,7 @@ node_modules
 
 # Secrets and env files — never commit
 secrets.txt
+.cursor/
 .env
 *.env
 !*.env.example

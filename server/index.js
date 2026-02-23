@@ -1,4 +1,19 @@
 require('dotenv').config();
+
+// Support Render: use inline JSON env var if no credentials file path is set
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+  try {
+    const credentialsPath = path.join(os.tmpdir(), `google-credentials-${process.pid}.json`);
+    fs.writeFileSync(credentialsPath, process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON, 'utf8');
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credentialsPath;
+  } catch (err) {
+    console.error('Failed to write GOOGLE_APPLICATION_CREDENTIALS_JSON to temp file:', err.message);
+  }
+}
+
 const express = require('express');
 const cors = require('cors');
 const { v2 } = require('@google-cloud/speech');

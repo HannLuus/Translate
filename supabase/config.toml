@@ -364,6 +364,16 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# Edge Functions: public API (no JWT) — same as previous Render backend
+[functions.health]
+verify_jwt = false
+[functions.interpret]
+verify_jwt = false
+[functions.response]
+verify_jwt = false
+[functions.response-audio]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

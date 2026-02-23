@@ -73,7 +73,7 @@ const ENGLISH_TO_BURMESE_PROMPT =
 async function transcribeWithChirp3(audioBuffer) {
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or GOOGLE_APPLICATION_CREDENTIALS with project_id');
-  const recognizer = `projects/${projectId}/locations/global/recognizers/_`;
+  const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
@@ -206,7 +206,7 @@ app.post('/api/response', async (req, res) => {
 async function transcribeEnglish(audioBuffer) {
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or credentials');
-  const recognizer = `projects/${projectId}/locations/global/recognizers/_`;
+  const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;

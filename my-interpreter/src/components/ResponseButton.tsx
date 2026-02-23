@@ -17,6 +17,10 @@ interface ResponseButtonProps {
 }
 
 const SAMPLE_RATE = 16000;
+const WORKLET_URL = new URL(
+  `${import.meta.env.BASE_URL}audio-processor.worklet.js`,
+  import.meta.url
+).href;
 
 function floatTo16BitPcm(float32: Float32Array): ArrayBuffer {
   const int16 = new Int16Array(float32.length);
@@ -44,24 +48,28 @@ export function ResponseButton({
           sampleRate: SAMPLE_RATE,
         },
       })
-      .then((stream) => {
+      .then(async (stream) => {
         const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
         if (audioContext.state === 'suspended') {
           audioContext.resume().catch(() => {});
         }
+        await audioContext.audioWorklet.addModule(WORKLET_URL);
+
         const source = audioContext.createMediaStreamSource(stream);
         const buffer: Int16Array[] = [];
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        processor.onaudioprocess = (e) => {
-          const input = e.inputBuffer.getChannelData(0);
-          buffer.push(new Int16Array(floatTo16BitPcm(input) as ArrayBuffer));
+        const node = new AudioWorkletNode(audioContext, 'capture-processor', {
+          processorOptions: { chunkSize: 4096 },
+        });
+        node.port.onmessage = (e: MessageEvent<{ chunk: Float32Array }>) => {
+          const int16 = new Int16Array(floatTo16BitPcm(e.data.chunk) as ArrayBuffer);
+          buffer.push(int16);
         };
-        source.connect(processor);
-        processor.connect(audioContext.destination);
+        source.connect(node);
+        node.connect(audioContext.destination);
         setRecording(true);
 
         stopRef.current = () => {
-          processor.disconnect();
+          node.disconnect();
           source.disconnect();
           audioContext.close();
           stream.getTracks().forEach((t) => t.stop());

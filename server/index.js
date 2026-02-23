@@ -32,7 +32,8 @@ let genAI;
 
 function getSpeechClient() {
   if (!speechClient) {
-    speechClient = new v2.SpeechClient();
+    // Chirp 3 is in us/eu multi-region, not global. Client must use regional endpoint.
+    speechClient = new v2.SpeechClient({ apiEndpoint: 'us-speech.googleapis.com' });
   }
   return speechClient;
 }
@@ -113,7 +114,7 @@ async function translateWithGemini(text, toEnglish = true) {
   return (part?.text || '').trim();
 }
 
-const TTS_MAX_BYTES = 4500; // Google TTS limit is 5000 bytes per request
+const TTS_MAX_BYTES = 4500;
 
 function truncateForTts(text) {
   if (typeof text !== 'string') return '';

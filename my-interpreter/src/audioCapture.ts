@@ -1,9 +1,9 @@
 import type { CaptureMode } from './types';
 
-const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
-const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 4000; // 4 seconds
-const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
+const SAMPLE_RATE_CAPTURE = 48000;
+const SAMPLE_RATE_TARGET = 16000;
+const CHUNK_DURATION_MS = 4000;
+const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET;
 
 export async function getCaptureStream(
   mode: CaptureMode,
@@ -22,7 +22,6 @@ export async function getCaptureStream(
     });
     return stream;
   }
-  // face_to_face or fallback
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,
@@ -60,43 +59,45 @@ export interface ChunkCallback {
   (pcm16khz: ArrayBuffer): void;
 }
 
-export function captureAudioChunks(
+const WORKLET_URL = new URL(
+  `${import.meta.env.BASE_URL}audio-processor.worklet.js`,
+  import.meta.url
+).href;
+
+export async function captureAudioChunks(
   stream: MediaStream,
   onChunk: ChunkCallback
-): () => void {
+): Promise<() => void> {
   const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
   if (audioContext.state === 'suspended') {
     audioContext.resume().catch(() => {});
   }
+  await audioContext.audioWorklet.addModule(WORKLET_URL);
+
   const source = audioContext.createMediaStreamSource(stream);
-  const bufferSize = 4096;
-  const processor = audioContext.createScriptProcessor(bufferSize, 1, 1);
   const samplesPerChunk = Math.floor(
     (SAMPLE_RATE_CAPTURE * CHUNK_DURATION_MS) / 1000
   );
-  let buffer: number[] = [];
-  let stopped = false;
+  const node = new AudioWorkletNode(audioContext, 'capture-processor', {
+    processorOptions: { chunkSize: samplesPerChunk },
+  });
 
-  processor.onaudioprocess = (e) => {
+  let stopped = false;
+  node.port.onmessage = (e: MessageEvent<{ chunk: Float32Array }>) => {
     if (stopped) return;
-    const input = e.inputBuffer.getChannelData(0);
-    for (let i = 0; i < input.length; i++) buffer.push(input[i]);
-    while (buffer.length >= samplesPerChunk) {
-      const chunk = buffer.splice(0, samplesPerChunk);
-      const float32 = new Float32Array(chunk);
-      const int16_48k = floatTo16BitPcm(float32);
-      const int16_16k = downsampleTo16khz(int16_48k);
-      onChunk(int16_16k.buffer.slice(0) as ArrayBuffer);
-    }
+    const float32 = e.data.chunk;
+    const int16_48k = floatTo16BitPcm(float32);
+    const int16_16k = downsampleTo16khz(int16_48k);
+    onChunk(int16_16k.buffer.slice(0) as ArrayBuffer);
   };
 
-  source.connect(processor);
-  processor.connect(audioContext.destination);
+  source.connect(node);
+  node.connect(audioContext.destination);
 
   const stop = () => {
     stopped = true;
     try {
-      processor.disconnect();
+      node.disconnect();
       source.disconnect();
       audioContext.close();
     } catch (_) {

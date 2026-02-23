@@ -32,7 +32,7 @@ let genAI;
 
 function getSpeechClient() {
   if (!speechClient) {
-    // Chirp 3 is in us/eu multi-region, not global. Client must use regional endpoint.
+    // Chirp 3: available in US and EU only. We use the US endpoint; it works for this app.
     speechClient = new v2.SpeechClient({ apiEndpoint: 'us-speech.googleapis.com' });
   }
   return speechClient;
@@ -71,7 +71,14 @@ const BURMESE_TO_ENGLISH_PROMPT =
 const ENGLISH_TO_BURMESE_PROMPT =
   'Translate this English dialogue to natural Burmese for a local speaker to hear. Output only the translation, no explanations.';
 
+// 16kHz mono 16-bit: ~0.5s minimum to avoid Speech API INVALID_ARGUMENT on very short audio
+const MIN_AUDIO_BYTES = 16000 * 0.5 * 2; // 16000 samples/sec * 0.5s * 2 bytes
+
 async function transcribeWithChirp3(audioBuffer) {
+  const buf = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer);
+  if (buf.length < MIN_AUDIO_BYTES) {
+    return '';
+  }
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or GOOGLE_APPLICATION_CREDENTIALS with project_id');
   const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
@@ -88,7 +95,8 @@ async function transcribeWithChirp3(audioBuffer) {
         sampleRateHertz: 16000,
       },
     },
-    content: audioBuffer,
+    configMask: { paths: ['*'] },
+    content: buf,
   });
   const transcript = response?.results
     ?.map((r) => r.alternatives?.[0]?.transcript)
@@ -205,6 +213,10 @@ app.post('/api/response', async (req, res) => {
 });
 
 async function transcribeEnglish(audioBuffer) {
+  const buf = Buffer.isBuffer(audioBuffer) ? audioBuffer : Buffer.from(audioBuffer);
+  if (buf.length < MIN_AUDIO_BYTES) {
+    return '';
+  }
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or credentials');
   const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
@@ -221,7 +233,8 @@ async function transcribeEnglish(audioBuffer) {
         sampleRateHertz: 16000,
       },
     },
-    content: audioBuffer,
+    configMask: { paths: ['*'] },
+    content: buf,
   });
   const transcript = response?.results
     ?.map((r) => r.alternatives?.[0]?.transcript)

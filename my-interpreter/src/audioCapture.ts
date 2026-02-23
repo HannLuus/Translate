@@ -1,9 +1,9 @@
 import type { CaptureMode } from './types';
 
-const SAMPLE_RATE_CAPTURE = 48000;
-const SAMPLE_RATE_TARGET = 16000;
-const CHUNK_DURATION_MS = 4000;
-const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET;
+const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
+const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
+const CHUNK_DURATION_MS = 1500; // 1.5 s – short enough for live conversation, long enough for decent STT
+const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 export async function getCaptureStream(
   mode: CaptureMode,
@@ -22,6 +22,7 @@ export async function getCaptureStream(
     });
     return stream;
   }
+  // face_to_face or fallback
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       echoCancellation: true,

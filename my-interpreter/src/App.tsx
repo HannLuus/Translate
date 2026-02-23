@@ -261,7 +261,7 @@ function App() {
             type="button"
             className="app__btn app__btn--error-log"
             onClick={downloadErrorLog}
-            whileTap={{ scale: 0.98 }
+            whileTap={{ scale: 0.98 }}
           >
             Download error log
           </motion.button>

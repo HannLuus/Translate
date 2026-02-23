@@ -1,16 +1,30 @@
 import type { InterpretResult, ResponseResult } from './types';
 
-/** Canonical backend URL from Render (verify via Render MCP: list_services → serviceDetails.url). Single source of truth. */
+/**
+ * Canonical backend URL. Single source of truth — verify via Render MCP list_services → serviceDetails.url.
+ * The app must never use a typo (u6ul, ugul, ubul). All requests go through getApiBase() which enforces this.
+ */
 const RENDER_BACKEND_URL = 'https://translate-u6u1.onrender.com';
 
-const API_BASE = (() => {
-  const url = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL : '';
-  const base = url ? url.replace(/\/+$/, '') : '';
+function normalizeBaseFromEnv(): string {
+  const raw = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL.trim() : '';
+  const base = raw ? raw.replace(/\/+$/, '').trim() : '';
   if (!base) return RENDER_BACKEND_URL;
-  // Any translate-*.onrender.com that isn't the canonical URL → use canonical (fixes u6ul, ugul, ubul, etc.)
-  if (base.includes('translate-') && base.includes('onrender.com') && base !== RENDER_BACKEND_URL) return RENDER_BACKEND_URL;
-  return base;
-})();
+  try {
+    const u = new URL(base);
+    const host = u.hostname.toLowerCase();
+    if (host.includes('translate') && host.includes('onrender.com')) return RENDER_BACKEND_URL;
+    return base;
+  } catch {
+    return RENDER_BACKEND_URL;
+  }
+}
+
+const API_BASE = normalizeBaseFromEnv();
+
+if (typeof window !== 'undefined' && API_BASE.includes('onrender.com') && !API_BASE.startsWith('https://translate-u6u1.onrender.com')) {
+  console.error('[Translate] Invalid backend URL (typo?). Using canonical:', RENDER_BACKEND_URL);
+}
 
 export function getApiBase(): string {
   return API_BASE;

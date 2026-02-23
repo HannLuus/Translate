@@ -59,7 +59,7 @@ function App() {
 
   useEffect(() => {
     const apiBase = getApiBase();
-    console.log('[Translate] API base:', apiBase || '(none – set VITE_API_URL for production)');
+    console.log('[Translate] Backend:', apiBase);
     setBackendError(null);
     healthCheck().then(({ ok, error: err }: { ok: boolean; error?: string }) => {
       if (ok) {
@@ -188,7 +188,7 @@ function App() {
     const lines: string[] = [
       'Translate app – error log',
       `Generated: ${new Date().toISOString()}`,
-      `API base: ${apiBase || '(not set)'}`,
+      `Backend: ${apiBase}`,
       `Backend status: ${backendStatus}${backendError ? ` – ${backendError}` : ''}`,
       '',
       '--- Entries ---',

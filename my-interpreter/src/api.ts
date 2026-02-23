@@ -45,11 +45,18 @@ export async function healthCheck(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-export async function interpretAudio(audioPcm16khz: ArrayBuffer): Promise<InterpretResult> {
+export async function interpretAudio(
+  audioPcm16khz: ArrayBuffer,
+  previousEnglishSentence?: string | null
+): Promise<InterpretResult> {
   const url = `${API_BASE}/api/interpret`;
+  const headers: Record<string, string> = { 'Content-Type': 'application/octet-stream' };
+  if (previousEnglishSentence && previousEnglishSentence.trim()) {
+    headers['X-Translation-Context'] = previousEnglishSentence.trim();
+  }
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/octet-stream' },
+    headers,
     body: audioPcm16khz,
   });
   if (!res.ok) {

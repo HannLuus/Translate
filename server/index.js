@@ -30,10 +30,11 @@ let speechClient;
 let ttsClient;
 let genAI;
 
+const SPEECH_REGION = 'asia-southeast1'; // Singapore – lowest latency for Myanmar/Mandalay
+
 function getSpeechClient() {
   if (!speechClient) {
-    // Chirp 3: available in US and EU only. We use the US endpoint; it works for this app.
-    speechClient = new v2.SpeechClient({ apiEndpoint: 'us-speech.googleapis.com' });
+    speechClient = new v2.SpeechClient({ apiEndpoint: `${SPEECH_REGION}-speech.googleapis.com` });
   }
   return speechClient;
 }
@@ -71,6 +72,11 @@ const BURMESE_TO_ENGLISH_PROMPT =
 const ENGLISH_TO_BURMESE_PROMPT =
   'Translate this English dialogue to natural Burmese for a local speaker to hear. Output only the translation, no explanations.';
 
+function buildTranslationPrompt(promptBase, currentText, previousSentence) {
+  if (!previousSentence || !previousSentence.trim()) return `${promptBase}\n\n${currentText.trim()}`;
+  return `${promptBase}\n\nPrevious sentence (for context): ${previousSentence.trim()}\n\nCurrent to translate: ${currentText.trim()}`;
+}
+
 // 16kHz mono 16-bit: ~0.5s minimum to avoid Speech API INVALID_ARGUMENT on very short audio
 const MIN_AUDIO_BYTES = 16000 * 0.5 * 2; // 16000 samples/sec * 0.5s * 2 bytes
 
@@ -81,7 +87,7 @@ async function transcribeWithChirp3(audioBuffer) {
   }
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or GOOGLE_APPLICATION_CREDENTIALS with project_id');
-  const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
+  const recognizer = `projects/${projectId}/locations/${SPEECH_REGION}/recognizers/_`;
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
@@ -90,7 +96,6 @@ async function transcribeWithChirp3(audioBuffer) {
     sampleRateHertz: 16000,
     audioChannelCount: 1,
   };
-  // chirp_3 has limited language availability; fall back to chirp_2 if it rejects my-MM
   const models = ['chirp_3', 'chirp_2'];
   for (const model of models) {
     try {
@@ -128,13 +133,14 @@ async function transcribeWithChirp3(audioBuffer) {
   return '';
 }
 
-async function translateWithGemini(text, toEnglish = true) {
+async function translateWithGemini(text, toEnglish = true, previousSentence = null) {
   if (!text || typeof text !== 'string' || !text.trim()) return '';
   const ai = getGenAI();
   if (!ai) throw new Error('GEMINI_API_KEY not set');
   const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
-  const prompt = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
-  const result = await model.generateContent(`${prompt}\n\n${text.trim()}`);
+  const promptBase = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
+  const prompt = buildTranslationPrompt(promptBase, text, previousSentence);
+  const result = await model.generateContent(prompt);
   const resp = result.response;
   if (!resp || !resp.candidates || !resp.candidates[0]) {
     const blockReason = resp?.candidates?.[0]?.finishReason ?? resp?.promptFeedback?.blockReason;
@@ -199,11 +205,14 @@ app.post('/api/interpret', express.raw({ type: '*/*', limit: '10mb' }), async (r
     if (!audioBuffer || audioBuffer.length === 0) {
       return res.status(400).json({ error: 'Request body must be raw audio bytes' });
     }
+    const previousSentence = req.headers['x-translation-context'] && typeof req.headers['x-translation-context'] === 'string'
+      ? req.headers['x-translation-context'].trim()
+      : null;
     const burmeseText = await transcribeWithChirp3(audioBuffer);
     if (!burmeseText) {
       return res.json({ burmeseText: '', englishText: '', audioBase64: null });
     }
-    const englishText = await translateWithGemini(burmeseText, true);
+    const englishText = await translateWithGemini(burmeseText, true, previousSentence);
     const audioContent = await synthesizeSpeech(englishText, 'en-US');
     res.json({
       burmeseText,
@@ -241,7 +250,7 @@ async function transcribeEnglish(audioBuffer) {
   }
   const projectId = await getProjectId();
   if (!projectId) throw new Error('Missing GOOGLE_CLOUD_PROJECT or credentials');
-  const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
+  const recognizer = `projects/${projectId}/locations/${SPEECH_REGION}/recognizers/_`;
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;

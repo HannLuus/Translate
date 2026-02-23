@@ -54,8 +54,9 @@ async function testSpeechToText() {
     console.log('   SKIP: No project ID (set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON)');
     return;
   }
-  const client = new v2.SpeechClient();
-  const recognizer = `projects/${projectId}/locations/us/recognizers/_`;
+  const speechRegion = 'asia-southeast1';
+  const client = new v2.SpeechClient({ apiEndpoint: `${speechRegion}-speech.googleapis.com` });
+  const recognizer = `projects/${projectId}/locations/${speechRegion}/recognizers/_`;
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
   // Minimal 16kHz LINEAR16 audio: 0.2 sec = 6400 bytes (silence)

@@ -52,6 +52,7 @@ function App() {
   const [interpretStatus, setInterpretStatus] = useState<'idle' | 'listening' | 'processing'>('idle');
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
+  const lastEnglishRef = useRef<string>('');
 
   useEffect(() => {
     checkPermissions().then(setPermissionState);
@@ -127,9 +128,10 @@ function App() {
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const result = await interpretAudio(pcm);
+            const result = await interpretAudio(pcm, lastEnglishRef.current || undefined);
             const burmeseLine = result.burmeseText ?? '';
             const englishLine = result.englishText ?? '';
+            if (englishLine) lastEnglishRef.current = englishLine;
             if (burmeseLine || englishLine) {
               setBurmeseText((prev) => {
                 const next = prev ? prev + '\n' + burmeseLine : burmeseLine;
@@ -151,6 +153,7 @@ function App() {
         });
       stopCaptureRef.current = () => {
         stop();
+        lastEnglishRef.current = '';
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();
           currentTtsRef.current = null;

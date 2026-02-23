@@ -2,7 +2,7 @@ import type { CaptureMode } from './types';
 
 const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
 const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 3000; // 3 s – enough context for Burmese tonal speech without feeling too laggy
+const CHUNK_DURATION_MS = 1500; // 1.5 s buffer for low-latency live interpretation
 const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 export async function getCaptureStream(

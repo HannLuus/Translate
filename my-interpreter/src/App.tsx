@@ -43,11 +43,13 @@ function App() {
   const [burmeseText, setBurmeseText] = useState('');
   const [englishText, setEnglishText] = useState('');
   const [isPlayingTts, setIsPlayingTts] = useState(false);
+  const [playTtsEnabled, setPlayTtsEnabled] = useState(false);
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'ok' | 'unreachable'>('unknown');
   const [backendError, setBackendError] = useState<string | null>(null);
   const [captureStream, setCaptureStream] = useState<MediaStream | null>(null);
+  const [interpretStatus, setInterpretStatus] = useState<'idle' | 'listening' | 'processing'>('idle');
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
 
@@ -59,7 +61,7 @@ function App() {
     const apiBase = getApiBase();
     console.log('[Translate] API base:', apiBase || '(none – set VITE_API_URL for production)');
     setBackendError(null);
-    healthCheck().then(({ ok, error: err }) => {
+    healthCheck().then(({ ok, error: err }: { ok: boolean; error?: string }) => {
       if (ok) {
         setBackendStatus('ok');
         console.log('[Translate] Backend OK');
@@ -118,33 +120,55 @@ function App() {
       );
       setCaptureStream(stream);
       setActive(true);
+      setInterpretStatus('listening');
       await requestWakeLock();
 
+      const MAX_SUBTITLE_LINES = 8;
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
+            setInterpretStatus('processing');
             const result = await interpretAudio(pcm);
-            if (result.burmeseText) setBurmeseText(result.burmeseText);
-            if (result.englishText) setEnglishText(result.englishText);
-            if (result.audioBase64) playTts(result.audioBase64);
+            const burmeseLine = result.burmeseText ?? '';
+            const englishLine = result.englishText ?? '';
+            if (burmeseLine || englishLine) {
+              setBurmeseText((prev) => {
+                const next = prev ? prev + '\n' + burmeseLine : burmeseLine;
+                return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
+              });
+              setEnglishText((prev) => {
+                const next = prev ? prev + '\n' + englishLine : englishLine;
+                return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
+              });
+            }
+            if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'Interpret failed';
             setError(msg);
             pushErrorLog('error', `Interpret: ${msg}`);
+          } finally {
+            if (stopCaptureRef.current) setInterpretStatus('listening');
           }
         });
       stopCaptureRef.current = () => {
         stop();
+        if (currentTtsRef.current) {
+          currentTtsRef.current.pause();
+          currentTtsRef.current = null;
+          setIsPlayingTts(false);
+        }
         stream.getTracks().forEach((t) => t.stop());
         setCaptureStream(null);
+        setInterpretStatus('idle');
         releaseWakeLock();
         setActive(false);
       };
     } catch (e) {
+      setInterpretStatus('idle');
       const msg = e instanceof Error ? e.message : 'Failed to start capture';
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, playTts, pushErrorLog]);
+  }, [mode, loopbackDeviceId, playTts, playTtsEnabled, pushErrorLog]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -152,7 +176,11 @@ function App() {
   }, []);
 
   const handleResponseResult = useCallback((result: { burmeseText: string }) => {
-    setBurmeseText((prev) => (prev ? prev + '\n\n' : '') + result.burmeseText);
+    const MAX_SUBTITLE_LINES = 8;
+    setBurmeseText((prev) => {
+      const next = (prev ? prev + '\n\n' : '') + (result.burmeseText ?? '');
+      return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
+    });
   }, []);
 
   const downloadErrorLog = useCallback(() => {
@@ -238,6 +266,27 @@ function App() {
           stream={captureStream}
           active={active}
         />
+
+        {active && (
+          <div className="app__interpret-status">
+            <p className="app__interpret-hint" role="status">
+              {interpretStatus === 'listening' && (
+                <>Live subtitles — follow what they're saying. New lines appear as they speak; older lines scroll away.</>
+              )}
+              {interpretStatus === 'processing' && (
+                <>Sending to server…</>
+              )}
+            </p>
+            <label className="app__tts-toggle">
+              <input
+                type="checkbox"
+                checked={playTtsEnabled}
+                onChange={(e) => setPlayTtsEnabled(e.target.checked)}
+              />
+              <span>Play translation aloud</span>
+            </label>
+          </div>
+        )}
 
         <ConversationView
           burmeseText={burmeseText}

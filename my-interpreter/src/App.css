@@ -132,6 +132,12 @@
   border-radius: 8px;
 }
 
+.app__error span {
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
 .app__error-dismiss {
   flex-shrink: 0;
   padding: 0 0.35rem;

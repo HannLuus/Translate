@@ -7,8 +7,8 @@ const API_BASE = (() => {
   const url = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL : '';
   const base = url ? url.replace(/\/+$/, '') : '';
   if (!base) return RENDER_BACKEND_URL;
-  // Fix common typos (ugul/ubul/u6ul) so they resolve to the canonical Render URL.
-  if (/translate-(ugul|ubul|u6ul)\.onrender\.com/.test(base)) return RENDER_BACKEND_URL;
+  // Any translate-*.onrender.com that isn't the canonical URL → use canonical (fixes u6ul, ugul, ubul, etc.)
+  if (base.includes('translate-') && base.includes('onrender.com') && base !== RENDER_BACKEND_URL) return RENDER_BACKEND_URL;
   return base;
 })();
 

@@ -132,7 +132,7 @@ async function translateWithGemini(text, toEnglish = true) {
   if (!text || typeof text !== 'string' || !text.trim()) return '';
   const ai = getGenAI();
   if (!ai) throw new Error('GEMINI_API_KEY not set');
-  const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
+  const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
   const prompt = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
   const result = await model.generateContent(`${prompt}\n\n${text.trim()}`);
   const resp = result.response;

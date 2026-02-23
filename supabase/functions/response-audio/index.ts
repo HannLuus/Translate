@@ -1,0 +1,43 @@
+import { corsHeaders, handleCors } from '../_shared/cors.ts';
+import { transcribeEnglish } from '../_shared/speech.ts';
+import { translateWithGemini } from '../_shared/gemini.ts';
+import { synthesizeSpeech } from '../_shared/tts.ts';
+
+Deno.serve(async (req) => {
+  const cors = handleCors(req);
+  if (cors) return cors;
+
+  try {
+    const arrayBuffer = await req.arrayBuffer();
+    const audioBytes = new Uint8Array(arrayBuffer);
+
+    if (!audioBytes.length) {
+      return new Response(
+        JSON.stringify({ error: 'Request body must be raw audio bytes' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const englishText = await transcribeEnglish(audioBytes);
+    if (!englishText) {
+      return new Response(
+        JSON.stringify({ englishText: '', burmeseText: '', audioBase64: null }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const burmeseText = await translateWithGemini(englishText, false);
+    const audioBase64 = await synthesizeSpeech(burmeseText, 'my-MM');
+
+    return new Response(
+      JSON.stringify({ englishText, burmeseText, audioBase64 }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
+  } catch (err) {
+    console.error('[response-audio]', err);
+    return new Response(
+      JSON.stringify({ error: err instanceof Error ? err.message : 'Response audio failed' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+    );
+  }
+});

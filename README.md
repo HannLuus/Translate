@@ -45,7 +45,7 @@ Until you redeploy, the app will keep hitting the old backend and errors like `c
 ## Environment
 
 - **server/.env**: see `server/.env.example`. Requires Google Cloud credentials (Speech-to-Text, Text-to-Speech) and a Gemini API key.
-- **my-interpreter**: optional `VITE_API_URL` to point to the backend (e.g. `https://translate-u6u1.onrender.com`). If unset, dev uses the Vite proxy to `http://localhost:3001`. **Use the digit 1 in the hostname, not the letter L** — `translate-u6ul` will not resolve (ERR_NAME_NOT_RESOLVED).
+- **my-interpreter**: optional `VITE_API_URL` for the backend. If unset, the app uses the canonical Render URL. **Single source of truth:** verify the URL via Render MCP `list_services` → `serviceDetails.url` (currently `https://translate-u6u1.onrender.com`). Same constant is in `my-interpreter/src/api.ts` as `RENDER_BACKEND_URL`.
 
 ## PWA
 

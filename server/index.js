@@ -134,7 +134,7 @@ async function translateWithGemini(text, toEnglish = true) {
   if (!ai) throw new Error('GEMINI_API_KEY not set');
   const model = ai.getGenerativeModel({ model: 'gemini-1.5-flash' });
   const prompt = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
-  const result = await model.generateContent([{ role: 'user', parts: [{ text: `${prompt}\n\n${text.trim()}` }] }]);
+  const result = await model.generateContent(`${prompt}\n\n${text.trim()}`);
   const resp = result.response;
   if (!resp || !resp.candidates || !resp.candidates[0]) {
     const blockReason = resp?.candidates?.[0]?.finishReason ?? resp?.promptFeedback?.blockReason;

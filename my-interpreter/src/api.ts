@@ -1,12 +1,14 @@
 import type { InterpretResult, ResponseResult } from './types';
 
+/** Canonical backend URL from Render (verify via Render MCP: list_services → serviceDetails.url). Single source of truth. */
+const RENDER_BACKEND_URL = 'https://translate-u6u1.onrender.com';
+
 const API_BASE = (() => {
   const url = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL : '';
   const base = url ? url.replace(/\/+$/, '') : '';
-  // Render backend is translate-u6u1 (digit 1). Typos ubul/u6ul do not resolve — force correct host.
-  if (base && (base.includes('ubul') || base.includes('u6ul'))) {
-    return base.replace(/translate-(ubul|u6ul)\.onrender\.com/, 'translate-u6u1.onrender.com');
-  }
+  if (!base) return RENDER_BACKEND_URL;
+  // Fix common typos (ugul/ubul/u6ul) so they resolve to the canonical Render URL.
+  if (/translate-(ugul|ubul|u6ul)\.onrender\.com/.test(base)) return RENDER_BACKEND_URL;
   return base;
 })();
 

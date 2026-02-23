@@ -1,9 +1,28 @@
 import type { InterpretResult, ResponseResult } from './types';
 
-const API_BASE =
-  typeof import.meta.env?.VITE_API_URL === 'string'
-    ? import.meta.env.VITE_API_URL
-    : '';
+const API_BASE = (() => {
+  const url = typeof import.meta.env?.VITE_API_URL === 'string' ? import.meta.env.VITE_API_URL : '';
+  return url ? url.replace(/\/+$/, '') : '';
+})();
+
+export function getApiBase(): string {
+  return API_BASE;
+}
+
+/** GET /api/health – use on app load to verify backend is reachable */
+export async function healthCheck(): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE}/api/health`);
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const data = (await res.json()) as { ok?: boolean };
+    return data?.ok ? { ok: true } : { ok: false, error: 'Invalid health response' };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
 
 export async function interpretAudio(audioPcm16khz: ArrayBuffer): Promise<InterpretResult> {
   const url = `${API_BASE}/api/interpret`;

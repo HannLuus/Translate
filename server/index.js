@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-// Support Render: use inline JSON env var if no credentials file path is set
+// Support inline JSON credentials: use GOOGLE_APPLICATION_CREDENTIALS_JSON if no file path is set (e.g. Supabase Edge Functions, or server/.env)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

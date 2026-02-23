@@ -33,19 +33,22 @@ In **Rooted Android** mode the app captures audio from a **system loopback** dev
 
 In the app, open the **Loopback device ID** field (shown when Rooted Android is selected) and paste or select that device ID. The app will then use `getUserMedia({ audio: { deviceId: { exact: id } } })` to capture from that device.
 
-## Deploy (Render backend)
+## Deploy (Supabase backend)
 
-The backend is deployed as a Web Service on **Render** (root directory: `server`). After changing server code (e.g. fixing the Chirp 3 location), you must **redeploy** so the live API uses the new code:
+The backend runs as **Supabase Edge Functions** (see `supabase/functions/`). Pushing to `main` triggers a GitHub Action that runs `supabase functions deploy`, so the live API updates within seconds.
 
-- **Auto-deploy:** Push to your connected Git branch; Render will build and deploy.
-- **Manual:** In the Render dashboard, open the service → **Manual Deploy** → **Deploy latest commit**.
+- **Auto-deploy:** Push to `main`; the workflow `.github/workflows/deploy-supabase.yml` deploys all Edge Functions.
+- **Manual:** From the repo root run `supabase functions deploy --project-ref hbeixuedkdugfrpwpdph --no-verify-jwt`.
 
-Until you redeploy, the app will keep hitting the old backend and errors like `chirp_3 does not exist in the location named "global"` will continue.
+Backend URL and anon key are defined in `my-interpreter/src/api.ts`; override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel if needed.
+
+**One-time:** If you still have an old Render service for this app, suspend or delete it in the [Render Dashboard](https://dashboard.render.com/) (Render MCP cannot delete or suspend services).
 
 ## Environment
 
-- **server/.env**: see `server/.env.example`. Requires Google Cloud credentials (Speech-to-Text, Text-to-Speech) and a Gemini API key.
-- **my-interpreter**: backend URL is defined once in `my-interpreter/src/api.ts` as `RENDER_BACKEND_URL`. If `VITE_API_URL` is set to a different `translate-*.onrender.com` host (e.g. typo), the app ignores it and uses the canonical URL. Verify via Render MCP `list_services` → `serviceDetails.url`.
+- **Supabase Edge Functions:** Set secrets in Supabase Dashboard → Project Settings → Edge Functions → Secrets: `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`.
+- **Local server (optional):** `server/.env` — see `server/.env.example`. Used only for running the Node backend locally (`cd server && npm start`).
+- **my-interpreter:** Backend URL is in `my-interpreter/src/api.ts` (`SUPABASE_PROJECT_URL` / `API_BASE`). Override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel.
 
 ## PWA
 

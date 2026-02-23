@@ -364,7 +364,7 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
-# Edge Functions: public API (no JWT) — same as previous Render backend
+# Edge Functions: public API (no JWT)
 [functions.health]
 verify_jwt = false
 [functions.interpret]

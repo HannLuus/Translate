@@ -60,27 +60,45 @@ async function testSpeechToText() {
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
   // Minimal 16kHz LINEAR16 audio: 0.2 sec = 6400 bytes (silence)
   const silentBuffer = Buffer.alloc(6400, 0);
-  try {
-    const [response] = await client.recognize({
-      recognizer,
-      config: {
-        model: 'chirp_3',
-        languageCodes: ['my-MM'],
-        explicitDecodingConfig: {
-          encoding: Encoding.LINEAR16,
-          sampleRateHertz: 16000,
+  const models = ['chirp_3', 'chirp_2'];
+  for (const model of models) {
+    try {
+      const [response] = await client.recognize({
+        recognizer,
+        config: {
+          model,
+          languageCodes: ['my-MM'],
+          explicitDecodingConfig: {
+            encoding: Encoding.LINEAR16,
+            sampleRateHertz: 16000,
+            audioChannelCount: 1,
+          },
         },
-      },
-      content: silentBuffer,
-    });
-    const transcript = response?.results
-      ?.map((r) => r.alternatives?.[0]?.transcript)
-      .filter(Boolean)
-      .join(' ')
-      .trim();
-    console.log('   OK: Speech-to-Text (transcript:', transcript || '(empty/silence)', ')');
-  } catch (err) {
-    console.log('   FAIL:', err.message || err);
+        configMask: { paths: ['model', 'language_codes', 'explicit_decoding_config'] },
+        content: silentBuffer,
+      });
+      const transcript = response?.results
+        ?.map((r) => r.alternatives?.[0]?.transcript)
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      console.log(`   OK: Speech-to-Text (model: ${model}, transcript:`, transcript || '(empty/silence)', ')');
+      break;
+    } catch (err) {
+      const msg = err.message || String(err);
+      const isUnsupported =
+        msg.includes('not found') ||
+        msg.includes('not exist') ||
+        msg.includes('not supported') ||
+        msg.includes('unsupported') ||
+        msg.includes('invalid');
+      if (model === 'chirp_3' && isUnsupported) {
+        console.log(`   WARN: ${model} rejected (${msg}), retrying with chirp_2...`);
+        continue;
+      }
+      console.log('   FAIL:', msg);
+      break;
+    }
   }
 }
 

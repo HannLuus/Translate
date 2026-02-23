@@ -85,25 +85,47 @@ async function transcribeWithChirp3(audioBuffer) {
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
-  const [response] = await client.recognize({
-    recognizer,
-    config: {
-      model: 'chirp_3',
-      languageCodes: ['my-MM'],
-      explicitDecodingConfig: {
-        encoding: Encoding.LINEAR16,
-        sampleRateHertz: 16000,
-      },
-    },
-    configMask: { paths: ['*'] },
-    content: buf,
-  });
-  const transcript = response?.results
-    ?.map((r) => r.alternatives?.[0]?.transcript)
-    .filter(Boolean)
-    .join(' ')
-    .trim();
-  return transcript || '';
+  const explicitDecodingConfig = {
+    encoding: Encoding.LINEAR16,
+    sampleRateHertz: 16000,
+    audioChannelCount: 1,
+  };
+  // chirp_3 has limited language availability; fall back to chirp_2 if it rejects my-MM
+  const models = ['chirp_3', 'chirp_2'];
+  for (const model of models) {
+    try {
+      const [response] = await client.recognize({
+        recognizer,
+        config: {
+          model,
+          languageCodes: ['my-MM'],
+          explicitDecodingConfig,
+        },
+        configMask: { paths: ['model', 'language_codes', 'explicit_decoding_config'] },
+        content: buf,
+      });
+      const transcript = response?.results
+        ?.map((r) => r.alternatives?.[0]?.transcript)
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      return transcript || '';
+    } catch (err) {
+      const msg = err.message || '';
+      const isUnsupported =
+        msg.includes('not found') ||
+        msg.includes('not exist') ||
+        msg.includes('not supported') ||
+        msg.includes('unsupported') ||
+        msg.includes('invalid');
+      if (model === 'chirp_3' && isUnsupported) {
+        console.warn(`[STT] ${model} rejected for my-MM, retrying with chirp_2: ${msg}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return '';
 }
 
 async function translateWithGemini(text, toEnglish = true) {
@@ -223,25 +245,45 @@ async function transcribeEnglish(audioBuffer) {
   const client = getSpeechClient();
   const protos = require('@google-cloud/speech').protos;
   const Encoding = protos.google.cloud.speech.v2.ExplicitDecodingConfig.AudioEncoding;
-  const [response] = await client.recognize({
-    recognizer,
-    config: {
-      model: 'chirp_3',
-      languageCodes: ['en-US'],
-      explicitDecodingConfig: {
-        encoding: Encoding.LINEAR16,
-        sampleRateHertz: 16000,
-      },
-    },
-    configMask: { paths: ['*'] },
-    content: buf,
-  });
-  const transcript = response?.results
-    ?.map((r) => r.alternatives?.[0]?.transcript)
-    .filter(Boolean)
-    .join(' ')
-    .trim();
-  return transcript || '';
+  const models = ['chirp_3', 'chirp_2'];
+  for (const model of models) {
+    try {
+      const [response] = await client.recognize({
+        recognizer,
+        config: {
+          model,
+          languageCodes: ['en-US'],
+          explicitDecodingConfig: {
+            encoding: Encoding.LINEAR16,
+            sampleRateHertz: 16000,
+            audioChannelCount: 1,
+          },
+        },
+        configMask: { paths: ['model', 'language_codes', 'explicit_decoding_config'] },
+        content: buf,
+      });
+      const transcript = response?.results
+        ?.map((r) => r.alternatives?.[0]?.transcript)
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+      return transcript || '';
+    } catch (err) {
+      const msg = err.message || '';
+      const isUnsupported =
+        msg.includes('not found') ||
+        msg.includes('not exist') ||
+        msg.includes('not supported') ||
+        msg.includes('unsupported') ||
+        msg.includes('invalid');
+      if (model === 'chirp_3' && isUnsupported) {
+        console.warn(`[STT] ${model} rejected for en-US, retrying with chirp_2: ${msg}`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  return '';
 }
 
 app.post('/api/response-audio', express.raw({ type: '*/*', limit: '10mb' }), async (req, res) => {

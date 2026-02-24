@@ -23,6 +23,7 @@ const AUDIO_INTERPRET_SYSTEM =
   '- Negations are critical — if the source says NOT to do something, the translation MUST also say NOT to. Never flip a prohibition.\n' +
   '- Translate to complete, natural English sentences — never fragments or word lists.\n' +
   '- If the clip is a sentence fragment, use the recent context to complete the meaning.\n' +
+  '- Speaker role: in a live interpretation context the person being recorded is always giving information, instructions, or warnings TO the listener — they are NEVER asking the listener to speak to them. When the Burmese subject is omitted and the role is ambiguous, default to the speaker as the one delivering information (e.g. "I will tell you..." not "Please tell me...").\n' +
   '- Output ONLY raw JSON — no markdown, no code fences, no extra text:\n' +
   '  {"burmese":"<burmese transcript>","english":"<english translation>"}';
 

@@ -2,11 +2,10 @@ import type { InterpretResult, ResponseResult } from './types';
 
 /**
  * Supabase Edge Functions base URL.
- * Set VITE_SUPABASE_URL in Vercel env vars (the Project URL from the Supabase dashboard,
- * e.g. https://abcdefghijklmno.supabase.co). Falls back to the value below.
+ * In dev we use a relative path so Vite proxies to Supabase (avoids CORS). In production use full URL.
  */
 const SUPABASE_PROJECT_URL = import.meta.env?.VITE_SUPABASE_URL?.replace(/\/+$/, '') || 'https://hbeixuedkdugfrpwpdph.supabase.co';
-const API_BASE = `${SUPABASE_PROJECT_URL}/functions/v1`;
+const API_BASE = import.meta.env.DEV ? '/functions/v1' : `${SUPABASE_PROJECT_URL}/functions/v1`;
 
 /**
  * Supabase anon key — required by Edge Functions as the `apikey` header.

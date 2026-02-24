@@ -258,6 +258,12 @@ function App() {
           disabled={active}
         />
 
+        {mode === 'desktop' && !active && (
+          <p className="app__desktop-hint" role="status">
+            When you click Start, choose the Teams tab (or window) and check <strong>Share tab audio</strong> so the app can hear the meeting.
+          </p>
+        )}
+
         <div className="app__controls">
           {!active ? (
             <motion.button

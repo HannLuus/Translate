@@ -58,6 +58,13 @@
   gap: 1rem;
 }
 
+.app__desktop-hint {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin: 0 0 0.5rem 0;
+  text-align: center;
+}
+
 .app__controls {
   display: flex;
   justify-content: center;

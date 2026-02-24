@@ -1,5 +1,8 @@
 import type { CaptureMode } from './types';
 
+const DESKTOP_NO_AUDIO_MESSAGE =
+  'No audio in shared tab. Stop and start again: when the browser asks what to share, choose the Teams tab and check "Share tab audio" (or "Share system audio") so the app can hear the meeting.';
+
 const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
 const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
 const CHUNK_DURATION_MS = 1800; // ~1.8 s to reduce delay between speech and display (was 2.5 s)
@@ -14,6 +17,11 @@ export async function getCaptureStream(
       video: true,
       audio: true,
     });
+    const hasAudio = stream.getAudioTracks().length > 0;
+    if (!hasAudio) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+    }
     return stream;
   }
   if (mode === 'rooted_android' && loopbackDeviceId) {
@@ -69,6 +77,9 @@ export async function captureAudioChunks(
   stream: MediaStream,
   onChunk: ChunkCallback
 ): Promise<() => void> {
+  if (stream.getAudioTracks().length === 0) {
+    throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+  }
   const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
   if (audioContext.state === 'suspended') {
     audioContext.resume().catch(() => {});

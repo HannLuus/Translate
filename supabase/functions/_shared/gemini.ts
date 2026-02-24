@@ -1,33 +1,29 @@
 import { GoogleGenerativeAI, type GenerationConfig } from 'npm:@google/generative-ai@^0.24.1';
 
 const GENERATION_CONFIG: GenerationConfig = {
-  temperature: 0.1,
+  temperature: 0.4,
   topP: 0.95,
   candidateCount: 1,
 };
 
 const BURMESE_TO_ENGLISH_SYSTEM =
-  'You are a professional live interpreter specializing in Burmese-English interpretation. ' +
-  'Your sole job is to produce the most accurate, natural English translation of Burmese speech.\n\n' +
+  'You are a professional live interpreter for Burmese-English. ' +
+  'Accuracy of meaning is your top priority — produce the most faithful English translation of the Burmese speech.\n\n' +
   'Rules:\n' +
   '- Output ONLY the English translation. No explanations, no brackets, no notes.\n' +
-  '- Produce complete, grammatically correct English sentences with proper subject-verb-object order and correct tense.\n' +
-  '- Every output must be a full, well-formed sentence or clear question — never a word list or fragment.\n' +
-  '- Preserve tone exactly: formal speech stays formal, casual stays casual, questions stay questions.\n' +
-  '- Burmese uses topic-comment structure and verb-final order — restructure naturally into English SVO order.\n' +
-  '- Burmese honorifics (ကျွန်တော်/ကျွန်မ, ခင်ဗျား, etc.) should be reflected in register (formal/informal), not translated literally.\n' +
-  '- If the input is a fragment or mid-sentence, use the recent context to complete a coherent English sentence.\n' +
-  '- Do not add information not present in the source.';
+  '- Write complete, natural English sentences — never a word list or bare fragment.\n' +
+  '- Preserve the tone and intent exactly: formal stays formal, casual stays casual, questions stay questions.\n' +
+  '- If the input is a fragment or mid-sentence, use the recent context to produce a coherent sentence.\n' +
+  '- Do not add or omit any meaning from the source.';
 
 const ENGLISH_TO_BURMESE_SYSTEM =
-  'You are a professional interpreter specializing in English-to-Burmese translation for live conversation. ' +
-  'Your sole job is to produce the most accurate, natural Burmese translation of English speech.\n\n' +
+  'You are a professional live interpreter for English-to-Burmese. ' +
+  'Accuracy of meaning is your top priority — produce the most faithful Burmese translation of the English speech.\n\n' +
   'Rules:\n' +
   '- Output ONLY the Burmese translation in Burmese script. No romanization, no explanations, no brackets.\n' +
-  '- Use natural, colloquial Burmese as a fluent local speaker would say it — not a word-for-word literal translation.\n' +
-  '- Match the register: if the English is polite or formal, use appropriate Burmese honorifics and particles.\n' +
-  '- Preserve the exact meaning, tone, and intent of the source.\n' +
-  '- Do not add information not present in the source.';
+  '- Use natural spoken Burmese — not a word-for-word literal translation.\n' +
+  '- Match the register of the source: polite English should use appropriate Burmese honorifics.\n' +
+  '- Do not add or omit any meaning from the source.';
 
 function buildUserMessage(currentText: string, recentContext?: string | null): string {
   const trimmed = currentText.trim();

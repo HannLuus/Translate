@@ -1,6 +1,5 @@
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
-import { transcribeBurmese } from '../_shared/speech.ts';
-import { translateWithGemini } from '../_shared/gemini.ts';
+import { transcribeAndTranslateAudio } from '../_shared/gemini.ts';
 import { synthesizeSpeech } from '../_shared/tts.ts';
 
 Deno.serve(async (req) => {
@@ -20,15 +19,15 @@ Deno.serve(async (req) => {
 
     const recentContext = req.headers.get('x-translation-context')?.trim() || null;
 
-    const burmeseText = await transcribeBurmese(audioBytes);
-    if (!burmeseText) {
+    const { burmeseText, englishText } = await transcribeAndTranslateAudio(audioBytes, recentContext);
+
+    if (!englishText) {
       return new Response(
         JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    const englishText = await translateWithGemini(burmeseText, true, recentContext);
     const audioBase64 = await synthesizeSpeech(englishText, 'en-US');
 
     return new Response(

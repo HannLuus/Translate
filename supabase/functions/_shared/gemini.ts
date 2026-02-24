@@ -96,6 +96,19 @@ function getAI(): GoogleGenerativeAI {
   return _ai;
 }
 
+/** Delays for retry backoff (rate limits in long meetings). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** True if the error is a Gemini rate limit or quota error — safe to retry. */
+function isRetryableError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /429|quota|Quota exceeded|resource_exhausted|rate limit|RESOURCE_EXHAUSTED|too many requests/i.test(msg);
+}
+
+const RETRY_DELAYS_MS = [2000, 4000, 8000]; // 3 retries after initial attempt (4 attempts total)
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -122,43 +135,57 @@ export async function transcribeAndTranslateAudio(
   });
 
   const textPart = 'Transcribe and translate the Burmese audio clip.';
+  const maxAttempts = 1 + RETRY_DELAYS_MS.length;
+  let lastError: unknown;
 
-  const result = await model.generateContent({
-    contents: [{
-      role: 'user',
-      parts: [
-        { inlineData: { mimeType: 'audio/wav', data: audioBase64 } },
-        { text: textPart },
-      ],
-    }],
-  });
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      if (attempt > 0) {
+        await delay(RETRY_DELAYS_MS[attempt - 1]);
+        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+      }
 
-  const resp = result.response;
-  if (!resp?.candidates?.length) {
-    const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
-    throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      const result = await model.generateContent({
+        contents: [{
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: 'audio/wav', data: audioBase64 } },
+            { text: textPart },
+          ],
+        }],
+      });
+
+      const resp = result.response;
+      if (!resp?.candidates?.length) {
+        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
+        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      }
+
+      const candidate = resp.candidates[0];
+      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
+      }
+
+      const raw = (candidate.content?.parts?.[0]?.text ?? '').trim();
+      if (!raw) return { burmeseText: '', englishText: '' };
+
+      try {
+        const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/,'').trim();
+        const parsed = JSON.parse(json) as { burmese?: string; english?: string };
+        return {
+          burmeseText: (parsed.burmese ?? '').trim(),
+          englishText: (parsed.english ?? '').trim(),
+        };
+      } catch {
+        return { burmeseText: '', englishText: raw };
+      }
+    } catch (e) {
+      lastError = e;
+      if (attempt === maxAttempts - 1 || !isRetryableError(e)) throw e;
+    }
   }
 
-  const candidate = resp.candidates[0];
-  if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-    throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
-  }
-
-  const raw = (candidate.content?.parts?.[0]?.text ?? '').trim();
-  if (!raw) return { burmeseText: '', englishText: '' };
-
-  try {
-    // Strip any accidental markdown code fences before parsing
-    const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/,'').trim();
-    const parsed = JSON.parse(json) as { burmese?: string; english?: string };
-    return {
-      burmeseText: (parsed.burmese ?? '').trim(),
-      englishText: (parsed.english ?? '').trim(),
-    };
-  } catch {
-    // If JSON parsing fails, treat the whole response as the English translation
-    return { burmeseText: '', englishText: raw };
-  }
+  throw lastError;
 }
 
 /** English → Burmese text translation (used by response / response-audio functions). */
@@ -176,19 +203,36 @@ export async function translateWithGemini(
   });
 
   const userMessage = buildUserMessage(text, toEnglish ? recentContext : null);
-  const result = await model.generateContent(userMessage);
-  const resp = result.response;
+  const maxAttempts = 1 + RETRY_DELAYS_MS.length;
+  let lastError: unknown;
 
-  if (!resp?.candidates?.length) {
-    const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
-    throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      if (attempt > 0) {
+        await delay(RETRY_DELAYS_MS[attempt - 1]);
+        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+      }
+
+      const result = await model.generateContent(userMessage);
+      const resp = result.response;
+
+      if (!resp?.candidates?.length) {
+        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
+        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      }
+
+      const candidate = resp.candidates[0];
+      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
+      }
+
+      const part = candidate.content?.parts?.[0];
+      return (part?.text ?? '').trim();
+    } catch (e) {
+      lastError = e;
+      if (attempt === maxAttempts - 1 || !isRetryableError(e)) throw e;
+    }
   }
 
-  const candidate = resp.candidates[0];
-  if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-    throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
-  }
-
-  const part = candidate.content?.parts?.[0];
-  return (part?.text ?? '').trim();
+  throw lastError;
 }

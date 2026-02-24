@@ -48,6 +48,16 @@ function isNetworkError(e: unknown): boolean {
   return /failed to fetch|network|connection closed|ERR_CONNECTION/i.test(msg);
 }
 
+/** 503 or quota/rate limit — backend may succeed after a short wait (long meetings). */
+function isRetryableInterpretError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /503|429|quota|Quota exceeded|rate limit|free_tier|billing/i.test(msg);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function doInterpret(
   body: ArrayBuffer,
   headers: Record<string, string>,
@@ -64,6 +74,8 @@ async function doInterpret(
   return res.json() as Promise<InterpretResult>;
 }
 
+const INTERPRET_RETRY_DELAYS_MS = [3000, 6000]; // 2 retries (3 attempts total) for 503/rate limit
+
 export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
   recentTranslationContext?: string | null,
@@ -73,14 +85,27 @@ export async function interpretAudio(
     headers['X-Translation-Context'] = headerSafeContext(recentTranslationContext);
   }
   const body = audioPcm16khz.slice(0);
-  try {
-    return await doInterpret(body, headers);
-  } catch (e) {
-    if (isNetworkError(e)) {
-      return await doInterpret(audioPcm16khz.slice(0), headers);
+  const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      if (attempt > 0) {
+        await delay(INTERPRET_RETRY_DELAYS_MS[attempt - 1]);
+      }
+      return await doInterpret(body, headers);
+    } catch (e) {
+      lastError = e;
+      if (isNetworkError(e) && attempt < maxAttempts - 1) {
+        continue; // retry without extra delay for network errors
+      }
+      if (attempt === maxAttempts - 1 || !isRetryableInterpretError(e)) {
+        throw e;
+      }
     }
-    throw e;
   }
+
+  throw lastError;
 }
 
 export async function responseTranslate(englishText: string): Promise<ResponseResult> {

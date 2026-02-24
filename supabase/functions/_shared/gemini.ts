@@ -21,6 +21,8 @@ const AUDIO_INTERPRET_SYSTEM =
   '- Accuracy of meaning is your absolute top priority. Translate what was SAID — nothing more, nothing less.\n' +
   '- NEVER add content that was not spoken: no logical conclusions, no expected follow-ups, no advice, no culturally anticipated responses. If the speaker did not say it, it must not appear in the translation.\n' +
   '- NEVER substitute what you think the speaker meant or should have said. Even if the content seems unusual or unexpected, translate it exactly as stated.\n' +
+  '- Always identify and preserve the grammatical subject of each sentence. Never replace a specific noun (food, plant, medicine, object, person, place) with a vague description of its properties. For example, if the speaker names a specific food, translate that food name — do not replace it with "the warm thing" or "it".\n' +
+  '- If you cannot confidently identify a specific word, write your best phonetic transliteration in brackets (e.g. [ngayoke]) rather than silently omitting or vaguely describing it.\n' +
   '- Negations are critical — if the source says NOT to do something, the translation MUST also say NOT to. Never flip a prohibition.\n' +
   '- Preserve all numbers, counts, and lists exactly (e.g. if the speaker says "2 precautions" or "point number one", keep those specifics).\n' +
   '- Preserve tone exactly: formal stays formal, casual stays casual, questions stay questions.\n' +

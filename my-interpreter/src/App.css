@@ -145,12 +145,13 @@
 }
 
 .app__btn--secondary {
-  background: rgba(148, 163, 184, 0.3);
-  color: #e2e8f0;
+  background: #6b7280;
+  color: #ffffff;
 }
 
 .app__btn--secondary:hover {
-  background: rgba(148, 163, 184, 0.45);
+  background: #4b5563;
+  color: #ffffff;
 }
 
 .app__testing-actions {

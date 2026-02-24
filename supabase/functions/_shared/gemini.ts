@@ -13,6 +13,7 @@ const BURMESE_TO_ENGLISH_SYSTEM =
   '- Output ONLY the English translation. No explanations, no brackets, no notes.\n' +
   '- Write complete, natural English sentences — never a word list or bare fragment.\n' +
   '- Preserve the tone and intent exactly: formal stays formal, casual stays casual, questions stay questions.\n' +
+  '- Negations are critical — if the source says do NOT do something, the translation MUST also say do NOT. Never flip a prohibition into a permission.\n' +
   '- If the input is a fragment or mid-sentence, use the recent context to produce a coherent sentence.\n' +
   '- Do not add or omit any meaning from the source.';
 

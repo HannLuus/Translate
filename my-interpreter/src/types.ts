@@ -15,3 +15,12 @@ export interface PermissionState {
   tabAudio: 'unknown' | 'granted' | 'blocked' | 'unsupported';
   microphone: 'unknown' | 'granted' | 'blocked';
 }
+
+/** One translation segment shown in the conversation view. */
+export interface TranslationSegment {
+  id: number;
+  text: string;
+  shownAt: number;
+  /** Filled for interpretation segments (Burmese heard); absent for response segments. */
+  burmeseText?: string;
+}

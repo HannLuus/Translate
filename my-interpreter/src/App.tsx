@@ -8,15 +8,14 @@ import { ResponseButton } from './components/ResponseButton';
 import { getCaptureStream, captureAudioChunks } from './audioCapture';
 import { interpretAudio, healthCheck, getApiBase } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
-import type { CaptureMode, PermissionState } from './types';
+import type { CaptureMode, PermissionState, TranslationSegment } from './types';
 import './App.css';
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
-const TRANSLATION_VISIBLE_MS = 5000;
+const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
-type TranslationSegment = { id: number; text: string; shownAt: number };
 
 function App() {
   const errorLogRef = useRef<ErrorLogEntry[]>([]);
@@ -37,6 +36,10 @@ function App() {
   });
   const [loopbackDeviceId, setLoopbackDeviceId] = useState(() => {
     return localStorage.getItem(LOOPBACK_STORAGE_KEY) ?? '';
+  });
+  const [testingMode, setTestingMode] = useState(() => {
+    const stored = localStorage.getItem(TESTING_MODE_STORAGE_KEY);
+    return stored !== '0';
   });
   const [permissionState, setPermissionState] = useState<PermissionState>({
     tabAudio: 'unknown',
@@ -94,16 +97,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem(LOOPBACK_STORAGE_KEY, loopbackDeviceId);
   }, [loopbackDeviceId]);
-
   useEffect(() => {
-    const interval = setInterval(() => {
-      const now = Date.now();
-      setTranslationSegments((prev) =>
-        prev.filter((s) => now - s.shownAt < TRANSLATION_VISIBLE_MS)
-      );
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
+    localStorage.setItem(TESTING_MODE_STORAGE_KEY, testingMode ? '1' : '0');
+  }, [testingMode]);
 
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
@@ -129,6 +125,8 @@ function App() {
       return;
     }
     try {
+      setTranslationSegments([]);
+      recentContextRef.current = '';
       const stream = await getCaptureStream(
         mode,
         mode === 'rooted_android' ? loopbackDeviceId.trim() || undefined : undefined
@@ -152,7 +150,12 @@ function App() {
                 .join('\n');
               setTranslationSegments((prev) => [
                 ...prev,
-                { id: ++segmentIdRef.current, text: englishLine, shownAt: Date.now() },
+                {
+                  id: ++segmentIdRef.current,
+                  text: englishLine,
+                  shownAt: Date.now(),
+                  burmeseText: result.burmeseText?.trim() || undefined,
+                },
               ]);
             }
             if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
@@ -167,7 +170,6 @@ function App() {
       stopCaptureRef.current = () => {
         stop();
         recentContextRef.current = '';
-        setTranslationSegments([]);
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();
           currentTtsRef.current = null;
@@ -185,7 +187,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, playTts, playTtsEnabled, pushErrorLog]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -258,6 +260,15 @@ function App() {
           disabled={active}
         />
 
+        <label className="app__tts-toggle app__tts-toggle--testing" title="Keep full script on screen for the whole session so you can compare and give feedback.">
+          <input
+            type="checkbox"
+            checked={testingMode}
+            onChange={(e) => setTestingMode(e.target.checked)}
+          />
+          <span>Testing mode — keep full script</span>
+        </label>
+
         {mode === 'desktop' && !active && (
           <p className="app__desktop-hint" role="status">
             When you click Start, choose the Teams tab (or window) and check <strong>Share tab audio</strong> so the app can hear the meeting.
@@ -304,7 +315,7 @@ function App() {
           <div className="app__interpret-status">
             <p className="app__interpret-hint" role="status">
               {interpretStatus === 'listening' && (
-                <>Live translation — newest at the bottom. Text clears after 5 seconds.</>
+                <>Live translation — newest at the bottom. Full script kept until you clear it.</>
               )}
               {interpretStatus === 'processing' && (
                 <>Sending to server…</>
@@ -313,10 +324,31 @@ function App() {
           </div>
         )}
 
+        {!active && (
+          <p className="app__script-hint" role="status">
+            Starting a new session clears the script.
+          </p>
+        )}
+
         <ConversationView
           translationText={translationSegments.map((s) => s.text).join('\n')}
           isPlayingTts={isPlayingTts}
+          testingMode={testingMode}
+          segments={testingMode ? translationSegments : undefined}
         />
+
+        {translationSegments.length > 0 && !active && (
+          <div className="app__testing-actions">
+            <motion.button
+              type="button"
+              className="app__btn app__btn--secondary"
+              onClick={() => setTranslationSegments([])}
+              whileTap={{ scale: 0.98 }}
+            >
+              Clear script (new run)
+            </motion.button>
+          </div>
+        )}
 
         <div className="app__response">
           <p className="app__response-hint" aria-hidden="true">

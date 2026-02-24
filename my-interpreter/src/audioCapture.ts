@@ -5,7 +5,7 @@ const DESKTOP_NO_AUDIO_MESSAGE =
 
 const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
 const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 3000; // 3 s — gives Burmese sentences time to complete before sending
+const CHUNK_DURATION_MS = 4000; // 4 s — gives Burmese sentences time to complete before sending
 const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 export async function getCaptureStream(

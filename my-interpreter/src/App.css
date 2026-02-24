@@ -359,8 +359,8 @@
 }
 
 .conversation-view__panel--translation {
-  background: rgba(79, 70, 229, 0.1);
-  border: 1px solid rgba(79, 70, 229, 0.3);
+  background: #ffffff;
+  border: 1px solid #d1d5db;
 }
 
 .conversation-view__label {
@@ -378,7 +378,7 @@
 }
 
 .conversation-view__placeholder {
-  color: #64748b;
+  color: #9ca3af;
   font-style: italic;
 }
 
@@ -391,8 +391,8 @@
 
 .conversation-view__live-line {
   padding: 0.2rem 0;
-  color: #ffffff;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: #111827;
+  border-bottom: 1px solid #e5e7eb;
   line-height: 1.6;
 }
 
@@ -401,7 +401,7 @@
 }
 
 .conversation-view__live-line--latest {
-  color: #ffffff;
+  color: #000000;
   font-weight: 600;
 }
 

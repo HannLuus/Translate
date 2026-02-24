@@ -146,7 +146,7 @@ function App() {
               recentContextRef.current = (prev ? prev + '\n' + englishLine : englishLine)
                 .split('\n')
                 .filter(Boolean)
-                .slice(-5)
+                .slice(-2)
                 .join('\n');
               setTranslationSegments((prev) => [
                 ...prev,

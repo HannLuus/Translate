@@ -121,9 +121,7 @@ export async function transcribeAndTranslateAudio(
     generationConfig: GENERATION_CONFIG,
   });
 
-  const textPart = recentContext?.trim()
-    ? `Recent sentence fragments (for grammatical continuity only — do NOT use these to infer the current topic):\n${recentContext.trim()}\n\nTranscribe and translate the Burmese audio clip.`
-    : 'Transcribe and translate the Burmese audio clip.';
+  const textPart = 'Transcribe and translate the Burmese audio clip.';
 
   const result = await model.generateContent({
     contents: [{

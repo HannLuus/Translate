@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, type GenerationConfig } from 'npm:@google/generative-ai@^0.24.1';
 
 const GENERATION_CONFIG: GenerationConfig = {
-  temperature: 0.4,
+  temperature: 0.2,
   topP: 0.95,
   candidateCount: 1,
 };
@@ -19,10 +19,10 @@ const AUDIO_INTERPRET_SYSTEM =
   'Transcribe it accurately and translate it to natural English.\n\n' +
   'Rules:\n' +
   '- Accuracy of meaning is your absolute top priority. Translate what was SAID — nothing more, nothing less.\n' +
-  '- NEVER add content that was not spoken: no logical conclusions, no expected follow-ups, no advice, no culturally anticipated responses. If the speaker did not say it, it must not appear in the translation.\n' +
-  '- NEVER substitute what you think the speaker meant or should have said. Even if the content seems unusual or unexpected, translate it exactly as stated.\n' +
-  '- Always identify and preserve the grammatical subject of each sentence. Never replace a specific noun (food, plant, medicine, object, person, place) with a vague description of its properties. For example, if the speaker names a specific food, translate that food name — do not replace it with "the warm thing" or "it".\n' +
-  '- If you cannot confidently identify a specific word, write your best phonetic transliteration in brackets (e.g. [ngayoke]) rather than silently omitting or vaguely describing it.\n' +
+  '- NEVER add content that was not spoken. This means: no logical conclusions, no expected advice, no culturally anticipated responses. A concrete example of what is FORBIDDEN: if the speech is about COVID-19 and the speaker did NOT say "wear a mask" or "stay at home", those words must NOT appear in the translation — even if they seem like an obvious or expected conclusion.\n' +
+  '- NEVER substitute what you think the speaker should have said. Even if the content seems surprising or unconventional (e.g. recommending a specific food as medicine), translate it exactly and faithfully.\n' +
+  '- Always identify and preserve the grammatical subject of each sentence. Never replace a specific noun (food, plant, medicine, object, person, place) with "it", "the thing", or a vague description of its properties. If the speaker names a specific food or plant, that name must appear in the translation.\n' +
+  '- If you cannot confidently identify a specific word — especially a food, plant, medicine, or proper noun — write your best phonetic transliteration in brackets (e.g. [ngayoke]) rather than silently omitting or vaguely describing it.\n' +
   '- Negations are critical — if the source says NOT to do something, the translation MUST also say NOT to. Never flip a prohibition.\n' +
   '- Preserve all numbers, counts, and lists exactly (e.g. if the speaker says "2 precautions" or "point number one", keep those specifics).\n' +
   '- Preserve tone exactly: formal stays formal, casual stays casual, questions stay questions.\n' +

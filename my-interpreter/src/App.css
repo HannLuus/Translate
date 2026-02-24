@@ -391,7 +391,7 @@
 
 .conversation-view__live-line {
   padding: 0.2rem 0;
-  color: #cbd5e1;
+  color: #ffffff;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   line-height: 1.6;
 }
@@ -401,8 +401,8 @@
 }
 
 .conversation-view__live-line--latest {
-  color: #f1f5f9;
-  font-weight: 500;
+  color: #ffffff;
+  font-weight: 600;
 }
 
 /* Testing mode full script */

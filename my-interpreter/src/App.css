@@ -334,13 +334,13 @@
   flex-direction: column;
   gap: 0.5rem;
   flex: 1;
-  min-height: 200px;
+  min-height: 240px;
 }
 
 .conversation-view__panel {
   flex: 1;
-  min-height: 200px;
-  max-height: 240px;
+  min-height: 240px;
+  max-height: 300px;
   padding: 1rem;
   border-radius: 12px;
   overflow: auto;
@@ -348,12 +348,12 @@
 
 @media (min-width: 900px) {
   .conversation-view {
-    min-height: 320px;
+    min-height: 360px;
   }
 
   .conversation-view__panel {
-    min-height: 320px;
-    max-height: 65vh;
+    min-height: 360px;
+    max-height: 70vh;
     padding: 1rem 1.25rem;
   }
 }
@@ -372,9 +372,8 @@
 }
 
 .conversation-view__content {
-  font-size: 1rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
+  font-size: 1.1rem;
+  line-height: 1.6;
   word-break: break-word;
 }
 
@@ -383,6 +382,30 @@
   font-style: italic;
 }
 
+/* Live subtitle view — sliding window of last 6 lines */
+.conversation-view__live {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.conversation-view__live-line {
+  padding: 0.2rem 0;
+  color: #cbd5e1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  line-height: 1.6;
+}
+
+.conversation-view__live-line:last-child {
+  border-bottom: none;
+}
+
+.conversation-view__live-line--latest {
+  color: #f1f5f9;
+  font-weight: 500;
+}
+
+/* Testing mode full script */
 .conversation-view__script {
   display: flex;
   flex-direction: column;

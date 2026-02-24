@@ -331,10 +331,10 @@ function App() {
         )}
 
         <ConversationView
-          translationText={translationSegments.map((s) => s.text).join('\n')}
+          translationText={translationSegments.slice(-6).map((s) => s.text).join('\n')}
           isPlayingTts={isPlayingTts}
           testingMode={testingMode}
-          segments={testingMode ? translationSegments : undefined}
+          segments={testingMode ? translationSegments : translationSegments.slice(-6)}
         />
 
         {translationSegments.length > 0 && !active && (

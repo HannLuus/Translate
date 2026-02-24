@@ -14,25 +14,25 @@ export function ConversationView({
   testingMode = false,
   segments,
 }: ConversationViewProps) {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const showScript = testingMode && segments && segments.length > 0;
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const el = contentRef.current?.parentElement;
-    if (el) el.scrollTop = el.scrollHeight;
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [translationText, segments?.length]);
+
+  const lines = translationText ? translationText.split('\n').filter(Boolean) : [];
 
   return (
     <div className="conversation-view">
       <div className="conversation-view__panel conversation-view__panel--translation">
         <p className="conversation-view__label">
           Translation{isPlayingTts && ' — playing'}
-          {showScript && ' (testing — full script)'}
+          {testingMode && ' (testing — full script)'}
         </p>
-        <div ref={contentRef} className="conversation-view__content">
-          {showScript ? (
+        <div className="conversation-view__content">
+          {testingMode && segments && segments.length > 0 ? (
             <div className="conversation-view__script">
-              {segments!.map((s) => (
+              {segments.map((s) => (
                 <div key={s.id} className="conversation-view__segment">
                   {s.burmeseText != null && s.burmeseText !== '' ? (
                     <>
@@ -46,13 +46,23 @@ export function ConversationView({
                 </div>
               ))}
             </div>
-          ) : translationText ? (
-            translationText
+          ) : lines.length > 0 ? (
+            <div className="conversation-view__live">
+              {lines.map((line, i) => (
+                <div
+                  key={i}
+                  className={`conversation-view__live-line${i === lines.length - 1 ? ' conversation-view__live-line--latest' : ''}`}
+                >
+                  {line}
+                </div>
+              ))}
+            </div>
           ) : (
             <span className="conversation-view__placeholder">
               Translation will appear here…
             </span>
           )}
+          <div ref={bottomRef} />
         </div>
       </div>
     </div>

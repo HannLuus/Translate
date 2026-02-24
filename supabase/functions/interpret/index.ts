@@ -18,7 +18,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const previousSentence = req.headers.get('x-translation-context')?.trim() || null;
+    const recentContext = req.headers.get('x-translation-context')?.trim() || null;
 
     const burmeseText = await transcribeBurmese(audioBytes);
     if (!burmeseText) {
@@ -28,7 +28,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    const englishText = await translateWithGemini(burmeseText, true, previousSentence);
+    const englishText = await translateWithGemini(burmeseText, true, recentContext);
     const audioBase64 = await synthesizeSpeech(englishText, 'en-US');
 
     return new Response(

@@ -68,13 +68,17 @@ async function getProjectId() {
 }
 
 const BURMESE_TO_ENGLISH_PROMPT =
-  'Translate this Burmese dialogue to natural English for an earbud feed. Output only the translation, no explanations.';
+  'You are a live interpreter. Translate the Burmese to natural, fluent English.\n\n' +
+  'Rules: Use complete, well-formed sentences. Preserve tone and connotation (formal, casual, question, etc.). ' +
+  'If the current Burmese is a fragment or mid-sentence, combine it with the recent context to produce one coherent English sentence where possible. ' +
+  'Output only the translation, no explanations or brackets.';
+
 const ENGLISH_TO_BURMESE_PROMPT =
   'Translate this English dialogue to natural Burmese for a local speaker to hear. Output only the translation, no explanations.';
 
-function buildTranslationPrompt(promptBase, currentText, previousSentence) {
-  if (!previousSentence || !previousSentence.trim()) return `${promptBase}\n\n${currentText.trim()}`;
-  return `${promptBase}\n\nPrevious sentence (for context): ${previousSentence.trim()}\n\nCurrent to translate: ${currentText.trim()}`;
+function buildTranslationPrompt(promptBase, currentText, recentContext) {
+  if (!recentContext || !recentContext.trim()) return `${promptBase}\n\nCurrent to translate: ${currentText.trim()}`;
+  return `${promptBase}\n\nRecent translation (for continuity): ${recentContext.trim()}\n\nCurrent to translate: ${currentText.trim()}`;
 }
 
 // 16kHz mono 16-bit: ~0.5s minimum to avoid Speech API INVALID_ARGUMENT on very short audio
@@ -133,13 +137,13 @@ async function transcribeWithChirp3(audioBuffer) {
   return '';
 }
 
-async function translateWithGemini(text, toEnglish = true, previousSentence = null) {
+async function translateWithGemini(text, toEnglish = true, recentContext = null) {
   if (!text || typeof text !== 'string' || !text.trim()) return '';
   const ai = getGenAI();
   if (!ai) throw new Error('GEMINI_API_KEY not set');
   const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
   const promptBase = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
-  const prompt = buildTranslationPrompt(promptBase, text, previousSentence);
+  const prompt = buildTranslationPrompt(promptBase, text, recentContext);
   const result = await model.generateContent(prompt);
   const resp = result.response;
   if (!resp || !resp.candidates || !resp.candidates[0]) {
@@ -167,11 +171,11 @@ async function synthesizeSpeech(text, languageCode = 'en-US') {
   if (!safeText) return null;
   const client = getTtsClient();
   const lang = languageCode.startsWith('my') ? 'my-MM' : 'en-US';
-  const voiceName = languageCode.startsWith('my') ? 'my-MM-Standard-A' : 'en-US-Neural2-D';
+  const voice = lang === 'my-MM' ? { languageCode: lang } : { languageCode: lang, name: 'en-US-Neural2-D' };
   try {
     const [response] = await client.synthesizeSpeech({
       input: { text: safeText },
-      voice: { languageCode: lang, name: voiceName },
+      voice,
       audioConfig: {
         audioEncoding: 'MP3',
         sampleRateHertz: 24000,
@@ -205,14 +209,14 @@ app.post('/api/interpret', express.raw({ type: '*/*', limit: '10mb' }), async (r
     if (!audioBuffer || audioBuffer.length === 0) {
       return res.status(400).json({ error: 'Request body must be raw audio bytes' });
     }
-    const previousSentence = req.headers['x-translation-context'] && typeof req.headers['x-translation-context'] === 'string'
+    const recentContext = req.headers['x-translation-context'] && typeof req.headers['x-translation-context'] === 'string'
       ? req.headers['x-translation-context'].trim()
       : null;
     const burmeseText = await transcribeWithChirp3(audioBuffer);
     if (!burmeseText) {
       return res.json({ burmeseText: '', englishText: '', audioBase64: null });
     }
-    const englishText = await translateWithGemini(burmeseText, true, previousSentence);
+    const englishText = await translateWithGemini(burmeseText, true, recentContext);
     const audioContent = await synthesizeSpeech(englishText, 'en-US');
     res.json({
       burmeseText,

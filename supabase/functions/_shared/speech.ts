@@ -4,6 +4,17 @@ const SPEECH_REGION = 'asia-southeast1';
 // 16 kHz mono 16-bit: minimum 0.5 s to avoid INVALID_ARGUMENT
 const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
 
+/** Encode bytes to base64 in chunks to avoid "Maximum call stack size exceeded". */
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 8192;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode.apply(null, chunk as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
 async function recognizeAudio(
   audioBase64: string,
   languageCodes: string[],
@@ -70,12 +81,12 @@ async function recognizeAudio(
 
 export async function transcribeBurmese(audioBytes: Uint8Array): Promise<string> {
   if (audioBytes.length < MIN_AUDIO_BYTES) return '';
-  const audioBase64 = btoa(String.fromCharCode(...audioBytes));
+  const audioBase64 = bytesToBase64(audioBytes);
   return recognizeAudio(audioBase64, ['my-MM']);
 }
 
 export async function transcribeEnglish(audioBytes: Uint8Array): Promise<string> {
   if (audioBytes.length < MIN_AUDIO_BYTES) return '';
-  const audioBase64 = btoa(String.fromCharCode(...audioBytes));
+  const audioBase64 = bytesToBase64(audioBytes);
   return recognizeAudio(audioBase64, ['en-US']);
 }

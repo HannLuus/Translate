@@ -39,24 +39,49 @@ export async function healthCheck(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-export async function interpretAudio(
-  audioPcm16khz: ArrayBuffer,
-  previousEnglishSentence?: string | null,
+/** Header values must not contain newlines; normalize for X-Translation-Context. */
+function headerSafeContext(s: string): string {
+  return s.trim().replace(/\s+/g, ' ').slice(0, 2000);
+}
+
+function isNetworkError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return /failed to fetch|network|connection closed|ERR_CONNECTION/i.test(msg);
+}
+
+async function doInterpret(
+  body: ArrayBuffer,
+  headers: Record<string, string>,
 ): Promise<InterpretResult> {
-  const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
-  if (previousEnglishSentence?.trim()) {
-    headers['X-Translation-Context'] = previousEnglishSentence.trim();
-  }
   const res = await fetch(`${API_BASE}/interpret`, {
     method: 'POST',
     headers,
-    body: audioPcm16khz,
+    body,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error((err as { error?: string }).error ?? 'Interpret failed');
   }
   return res.json() as Promise<InterpretResult>;
+}
+
+export async function interpretAudio(
+  audioPcm16khz: ArrayBuffer,
+  recentTranslationContext?: string | null,
+): Promise<InterpretResult> {
+  const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
+  if (recentTranslationContext?.trim()) {
+    headers['X-Translation-Context'] = headerSafeContext(recentTranslationContext);
+  }
+  const body = audioPcm16khz.slice(0);
+  try {
+    return await doInterpret(body, headers);
+  } catch (e) {
+    if (isNetworkError(e)) {
+      return await doInterpret(audioPcm16khz.slice(0), headers);
+    }
+    throw e;
+  }
 }
 
 export async function responseTranslate(englishText: string): Promise<ResponseResult> {
@@ -82,7 +107,7 @@ export async function responseAudio(pcm16khz: ArrayBuffer): Promise<ResponseAudi
   const res = await fetch(`${API_BASE}/response-audio`, {
     method: 'POST',
     headers: baseHeaders({ 'Content-Type': 'application/octet-stream' }),
-    body: pcm16khz,
+    body: pcm16khz.slice(0),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

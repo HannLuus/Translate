@@ -91,6 +91,11 @@
   cursor: pointer;
 }
 
+.app__tts-toggle--interpret {
+  margin-top: 0.5rem;
+  display: block;
+}
+
 .app__btn {
   padding: 0.6rem 1.2rem;
   font-size: 1rem;
@@ -156,7 +161,16 @@
 
 .app__response {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app__response-hint {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin: 0;
+  text-align: center;
 }
 
 /* Platform selector */
@@ -293,18 +307,13 @@
 .conversation-view__panel {
   flex: 1;
   min-height: 100px;
-  max-height: 200px;
+  max-height: 240px;
   padding: 1rem;
   border-radius: 12px;
   overflow: auto;
 }
 
-.conversation-view__panel--burmese {
-  background: rgba(34, 197, 94, 0.1);
-  border: 1px solid rgba(34, 197, 94, 0.3);
-}
-
-.conversation-view__panel--english {
+.conversation-view__panel--translation {
   background: rgba(79, 70, 229, 0.1);
   border: 1px solid rgba(79, 70, 229, 0.3);
 }

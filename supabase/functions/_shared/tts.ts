@@ -20,11 +20,13 @@ export async function synthesizeSpeech(
 
   const token = await getAccessToken();
   const lang = languageCode.startsWith('my') ? 'my-MM' : 'en-US';
-  const voiceName = lang === 'my-MM' ? 'my-MM-Standard-A' : 'en-US-Neural2-D';
+  // For my-MM do not set a voice name (API may not have my-MM-Standard-A); let API choose. For en-US use Neural2.
+  const voice: { languageCode: string; name?: string } =
+    lang === 'my-MM' ? { languageCode: lang } : { languageCode: lang, name: 'en-US-Neural2-D' };
 
   const body = {
     input: { text: safeText },
-    voice: { languageCode: lang, name: voiceName },
+    voice,
     audioConfig: { audioEncoding: 'MP3', sampleRateHertz: 24000 },
   };
 
@@ -39,8 +41,7 @@ export async function synthesizeSpeech(
 
   if (!res.ok) {
     const err = await res.text();
-    if (err.includes('voice')) {
-      // Fallback: let Google pick the voice
+    if (err.includes('voice') || err.includes('Voice')) {
       const fallbackBody = {
         input: { text: safeText },
         voice: { languageCode: lang },

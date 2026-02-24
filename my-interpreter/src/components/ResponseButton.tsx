@@ -14,9 +14,14 @@ interface ResponseButtonProps {
   onResult: (result: ResponseResult) => void;
   onError: (err: Error) => void;
   disabled?: boolean;
+  /** When true, play the Burmese TTS from the response over the speaker. */
+  playTtsEnabled?: boolean;
 }
 
 const SAMPLE_RATE = 16000;
+// Match backend MIN_AUDIO_BYTES (0.5 s at 16 kHz 16-bit) so we don't send too-short audio
+const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
+
 const WORKLET_URL = new URL(
   `${import.meta.env.BASE_URL}audio-processor.worklet.js`,
   import.meta.url
@@ -35,6 +40,7 @@ export function ResponseButton({
   onResult,
   onError,
   disabled,
+  playTtsEnabled = false,
 }: ResponseButtonProps) {
   const [recording, setRecording] = useState(false);
   const stopRef = useRef<(() => ArrayBuffer) | null>(null);
@@ -92,20 +98,20 @@ export function ResponseButton({
     const pcm = stop();
     stopRef.current = null;
     setRecording(false);
-    if (!pcm || pcm.byteLength < 2000) {
-      onError(new Error('Recording too short'));
+    if (!pcm || pcm.byteLength < MIN_AUDIO_BYTES) {
+      onError(new Error('Recording too short — speak for at least half a second'));
       return;
     }
     responseAudio(pcm)
       .then((data: ResponseAudioResult) => {
         onResult({ burmeseText: data.burmeseText, audioBase64: data.audioBase64 });
-        if (data.audioBase64) {
+        if (playTtsEnabled && data.audioBase64) {
           const audio = new Audio('data:audio/mp3;base64,' + data.audioBase64);
           audio.play().catch(() => {});
         }
       })
       .catch(onError);
-  }, [onResult, onError]);
+  }, [onResult, onError, playTtsEnabled]);
 
   return (
     <motion.button

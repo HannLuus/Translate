@@ -1,34 +1,31 @@
+import { useEffect, useRef } from 'react';
+
 interface ConversationViewProps {
-  burmeseText: string;
-  englishText: string;
+  translationText: string;
   isPlayingTts: boolean;
 }
 
 export function ConversationView({
-  burmeseText,
-  englishText,
+  translationText,
   isPlayingTts,
 }: ConversationViewProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = contentRef.current?.parentElement;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [translationText]);
+
   return (
     <div className="conversation-view">
-      <div className="conversation-view__panel conversation-view__panel--burmese">
-        <p className="conversation-view__label">Burmese (speaker)</p>
-        <div className="conversation-view__content">
-          {burmeseText || (
-            <span className="conversation-view__placeholder">
-              Transcribed Burmese will appear here…
-            </span>
-          )}
-        </div>
-      </div>
-      <div className="conversation-view__panel conversation-view__panel--english">
+      <div className="conversation-view__panel conversation-view__panel--translation">
         <p className="conversation-view__label">
-          English (you){isPlayingTts && ' — playing'}
+          Translation{isPlayingTts && ' — playing'}
         </p>
-        <div className="conversation-view__content">
-          {englishText || (
+        <div ref={contentRef} className="conversation-view__content">
+          {translationText || (
             <span className="conversation-view__placeholder">
-              Translated English will appear here…
+              Translation will appear here…
             </span>
           )}
         </div>

@@ -13,8 +13,10 @@ import './App.css';
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
+const TRANSLATION_VISIBLE_MS = 5000;
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
+type TranslationSegment = { id: number; text: string; shownAt: number };
 
 function App() {
   const errorLogRef = useRef<ErrorLogEntry[]>([]);
@@ -40,10 +42,11 @@ function App() {
     tabAudio: 'unknown',
     microphone: 'unknown',
   });
-  const [burmeseText, setBurmeseText] = useState('');
-  const [englishText, setEnglishText] = useState('');
+  const [translationSegments, setTranslationSegments] = useState<TranslationSegment[]>([]);
+  const segmentIdRef = useRef(0);
   const [isPlayingTts, setIsPlayingTts] = useState(false);
   const [playTtsEnabled, setPlayTtsEnabled] = useState(false);
+  const [playResponseTtsEnabled, setPlayResponseTtsEnabled] = useState(false);
   const [active, setActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<'unknown' | 'ok' | 'unreachable'>('unknown');
@@ -52,7 +55,8 @@ function App() {
   const [interpretStatus, setInterpretStatus] = useState<'idle' | 'listening' | 'processing'>('idle');
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
-  const lastEnglishRef = useRef<string>('');
+  /** Last 2–3 translation segments for continuity (sent to backend). */
+  const recentContextRef = useRef<string>('');
 
   useEffect(() => {
     checkPermissions().then(setPermissionState);
@@ -91,6 +95,16 @@ function App() {
     localStorage.setItem(LOOPBACK_STORAGE_KEY, loopbackDeviceId);
   }, [loopbackDeviceId]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setTranslationSegments((prev) =>
+        prev.filter((s) => now - s.shownAt < TRANSLATION_VISIBLE_MS)
+      );
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
       currentTtsRef.current.pause();
@@ -124,23 +138,22 @@ function App() {
       setInterpretStatus('listening');
       await requestWakeLock();
 
-      const MAX_SUBTITLE_LINES = 8;
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const result = await interpretAudio(pcm, lastEnglishRef.current || undefined);
-            const burmeseLine = result.burmeseText ?? '';
+            const result = await interpretAudio(pcm, recentContextRef.current || undefined);
             const englishLine = result.englishText ?? '';
-            if (englishLine) lastEnglishRef.current = englishLine;
-            if (burmeseLine || englishLine) {
-              setBurmeseText((prev) => {
-                const next = prev ? prev + '\n' + burmeseLine : burmeseLine;
-                return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
-              });
-              setEnglishText((prev) => {
-                const next = prev ? prev + '\n' + englishLine : englishLine;
-                return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
-              });
+            if (englishLine) {
+              const prev = recentContextRef.current;
+              recentContextRef.current = (prev ? prev + '\n' + englishLine : englishLine)
+                .split('\n')
+                .filter(Boolean)
+                .slice(-3)
+                .join('\n');
+              setTranslationSegments((prev) => [
+                ...prev,
+                { id: ++segmentIdRef.current, text: englishLine, shownAt: Date.now() },
+              ]);
             }
             if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
           } catch (e) {
@@ -153,7 +166,8 @@ function App() {
         });
       stopCaptureRef.current = () => {
         stop();
-        lastEnglishRef.current = '';
+        recentContextRef.current = '';
+        setTranslationSegments([]);
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();
           currentTtsRef.current = null;
@@ -179,11 +193,12 @@ function App() {
   }, []);
 
   const handleResponseResult = useCallback((result: { burmeseText: string }) => {
-    const MAX_SUBTITLE_LINES = 8;
-    setBurmeseText((prev) => {
-      const next = (prev ? prev + '\n\n' : '') + (result.burmeseText ?? '');
-      return next.split('\n').filter(Boolean).slice(-MAX_SUBTITLE_LINES).join('\n');
-    });
+    const text = result.burmeseText?.trim();
+    const toShow = text || 'No speech detected. Try speaking again.';
+    setTranslationSegments((prev) => [
+      ...prev,
+      { id: ++segmentIdRef.current, text: toShow, shownAt: Date.now() },
+    ]);
   }, []);
 
   const downloadErrorLog = useCallback(() => {
@@ -265,6 +280,15 @@ function App() {
           )}
         </div>
 
+        <label className="app__tts-toggle app__tts-toggle--interpret">
+          <input
+            type="checkbox"
+            checked={playTtsEnabled}
+            onChange={(e) => setPlayTtsEnabled(e.target.checked)}
+          />
+          <span>Play translation aloud</span>
+        </label>
+
         <WavizVisualizer
           stream={captureStream}
           active={active}
@@ -274,30 +298,32 @@ function App() {
           <div className="app__interpret-status">
             <p className="app__interpret-hint" role="status">
               {interpretStatus === 'listening' && (
-                <>Live subtitles — follow what they're saying. New lines appear as they speak; older lines scroll away.</>
+                <>Live translation — newest at the bottom. Text clears after 5 seconds.</>
               )}
               {interpretStatus === 'processing' && (
                 <>Sending to server…</>
               )}
             </p>
-            <label className="app__tts-toggle">
-              <input
-                type="checkbox"
-                checked={playTtsEnabled}
-                onChange={(e) => setPlayTtsEnabled(e.target.checked)}
-              />
-              <span>Play translation aloud</span>
-            </label>
           </div>
         )}
 
         <ConversationView
-          burmeseText={burmeseText}
-          englishText={englishText}
+          translationText={translationSegments.map((s) => s.text).join('\n')}
           isPlayingTts={isPlayingTts}
         />
 
         <div className="app__response">
+          <p className="app__response-hint" aria-hidden="true">
+            Speak in English — translation appears in Burmese for the other person.
+          </p>
+          <label className="app__tts-toggle app__tts-toggle--response">
+            <input
+              type="checkbox"
+              checked={playResponseTtsEnabled}
+              onChange={(e) => setPlayResponseTtsEnabled(e.target.checked)}
+            />
+            <span>Play response aloud</span>
+          </label>
           <ResponseButton
             onResult={handleResponseResult}
             onError={(e) => {
@@ -305,6 +331,7 @@ function App() {
               pushErrorLog('error', `Response: ${e.message}`);
             }}
             disabled={active}
+            playTtsEnabled={playResponseTtsEnabled}
           />
         </div>
 

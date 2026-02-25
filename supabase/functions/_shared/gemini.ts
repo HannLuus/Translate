@@ -134,7 +134,9 @@ export async function transcribeAndTranslateAudio(
     generationConfig: GENERATION_CONFIG,
   });
 
-  const textPart = 'Listen to this Burmese audio clip. Transcribe what was said, then interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent, not just the literal words.';
+  const textPart = recentContext?.trim()
+    ? `The listener has ALREADY heard the following interpretation — do NOT repeat or rephrase it:\n---\n${recentContext.trim()}\n---\n\nListen to this new audio clip. Interpret ONLY what is genuinely new and not already covered above. If the audio is simply repeating or rephrasing what was already said, return: {"burmese":"","english":""}`
+    : 'Listen to this Burmese audio clip. Interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent, not just the literal words.';
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 

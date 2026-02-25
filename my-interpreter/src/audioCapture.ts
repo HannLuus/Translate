@@ -16,9 +16,9 @@ const FRAME_MS = (FRAME_SAMPLES / SAMPLE_RATE_CAPTURE) * 1000; // ≈ 85 ms
 // A real interpreter waits for a natural pause before speaking.
 // We do the same: accumulate audio until the speaker pauses, then send.
 // ---------------------------------------------------------------------------
-const SILENCE_RMS       = 0.008;  // RMS below this = silence / background noise
-const PAUSE_GAP_MS      = 1200;   // speaker silent for 1.2 s = end of utterance
-const MIN_SPEECH_MS     = 1500;   // ignore clips shorter than 1.5 s (noise blip)
+const SILENCE_RMS       = 0.02;   // RMS below this = silence (covers typical meeting room ambient noise)
+const PAUSE_GAP_MS      = 600;    // speaker pauses 0.6 s = end of utterance (natural speech rhythm)
+const MIN_SPEECH_MS     = 800;    // ignore clips shorter than 0.8 s (noise blip)
 const MAX_SPEECH_MS     = 20000;  // force-send after 20 s even without a pause
 
 const PAUSE_FRAMES_NEEDED = Math.ceil(PAUSE_GAP_MS / FRAME_MS);   // ~14 frames

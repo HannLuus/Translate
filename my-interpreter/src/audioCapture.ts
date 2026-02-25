@@ -3,43 +3,31 @@ import type { CaptureMode } from './types';
 const DESKTOP_NO_AUDIO_MESSAGE =
   'No audio in shared tab. Stop and start again: when the browser asks what to share, choose the Teams tab and check "Share tab audio" (or "Share system audio") so the app can hear the meeting.';
 
-const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
-const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 12000; // 12 s — gives a speaker time to fully express a complete idea before sending
+const SAMPLE_RATE_CAPTURE = 48000;
+const SAMPLE_RATE_TARGET = 16000;
 const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
-export async function getCaptureStream(
-  mode: CaptureMode,
-  loopbackDeviceId?: string
-): Promise<MediaStream> {
-  if (mode === 'desktop') {
-    const stream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: true,
-    });
-    const hasAudio = stream.getAudioTracks().length > 0;
-    if (!hasAudio) {
-      stream.getTracks().forEach((t) => t.stop());
-      throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
-    }
-    return stream;
-  }
-  if (mode === 'rooted_android' && loopbackDeviceId) {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: { exact: loopbackDeviceId } },
-    });
-    return stream;
-  }
-  // face_to_face or fallback
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
-    },
-  });
-  return stream;
-}
+// Worklet sends ~85ms frames (4096 samples at 48kHz).
+const FRAME_SAMPLES = 4096;
+const FRAME_MS = (FRAME_SAMPLES / SAMPLE_RATE_CAPTURE) * 1000; // ≈ 85 ms
+
+// ---------------------------------------------------------------------------
+// Pause-detection settings
+// A real interpreter waits for a natural pause before speaking.
+// We do the same: accumulate audio until the speaker pauses, then send.
+// ---------------------------------------------------------------------------
+const SILENCE_RMS       = 0.008;  // RMS below this = silence / background noise
+const PAUSE_GAP_MS      = 1200;   // speaker silent for 1.2 s = end of utterance
+const MIN_SPEECH_MS     = 1500;   // ignore clips shorter than 1.5 s (noise blip)
+const MAX_SPEECH_MS     = 20000;  // force-send after 20 s even without a pause
+
+const PAUSE_FRAMES_NEEDED = Math.ceil(PAUSE_GAP_MS / FRAME_MS);   // ~14 frames
+const MAX_SPEECH_FRAMES   = Math.ceil(MAX_SPEECH_MS / FRAME_MS);  // ~235 frames
+const MIN_SPEECH_FRAMES   = Math.ceil(MIN_SPEECH_MS / FRAME_MS);  //  ~18 frames
+
+// ---------------------------------------------------------------------------
+// Audio helpers
+// ---------------------------------------------------------------------------
 
 function floatTo16BitPcm(float32: Float32Array): Int16Array {
   const int16 = new Int16Array(float32.length);
@@ -49,21 +37,6 @@ function floatTo16BitPcm(float32: Float32Array): Int16Array {
   }
   return int16;
 }
-
-/**
- * RMS energy of a 16-bit PCM buffer, normalised to 0–1.
- * Values below ~0.01 are essentially silence or background noise.
- */
-function rmsEnergy(int16: Int16Array): number {
-  let sum = 0;
-  for (let i = 0; i < int16.length; i++) {
-    const s = int16[i] / 32768;
-    sum += s * s;
-  }
-  return Math.sqrt(sum / int16.length);
-}
-
-const SILENCE_THRESHOLD = 0.01; // below this RMS the chunk is silence — skip it
 
 function downsampleTo16khz(int16At48k: Int16Array): Int16Array {
   const outLen = Math.floor(int16At48k.length / DOWN_RATIO);
@@ -79,6 +52,49 @@ function downsampleTo16khz(int16At48k: Int16Array): Int16Array {
   return out;
 }
 
+function rmsEnergy(int16: Int16Array): number {
+  let sum = 0;
+  for (let i = 0; i < int16.length; i++) {
+    const s = int16[i] / 32768;
+    sum += s * s;
+  }
+  return Math.sqrt(sum / int16.length);
+}
+
+function concatenateInt16(arrays: Int16Array[]): Int16Array {
+  const total = arrays.reduce((n, a) => n + a.length, 0);
+  const out = new Int16Array(total);
+  let offset = 0;
+  for (const a of arrays) { out.set(a, offset); offset += a.length; }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Stream capture
+// ---------------------------------------------------------------------------
+
+export async function getCaptureStream(
+  mode: CaptureMode,
+  loopbackDeviceId?: string
+): Promise<MediaStream> {
+  if (mode === 'desktop') {
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    if (stream.getAudioTracks().length === 0) {
+      stream.getTracks().forEach((t) => t.stop());
+      throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+    }
+    return stream;
+  }
+  if (mode === 'rooted_android' && loopbackDeviceId) {
+    return navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: loopbackDeviceId } },
+    });
+  }
+  return navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+}
+
 export interface ChunkCallback {
   (pcm16khz: ArrayBuffer): void;
 }
@@ -88,35 +104,79 @@ const WORKLET_URL = new URL(
   import.meta.url
 ).href;
 
+/**
+ * Capture audio and fire `onChunk` at natural speech pauses.
+ *
+ * State machine:
+ *   IDLE     → speaker silent; discard frames
+ *   SPEAKING → speaker active; accumulate frames
+ *              – after PAUSE_GAP_MS of silence  → flush to Gemini → IDLE
+ *              – after MAX_SPEECH_MS total       → flush to Gemini → IDLE
+ */
 export async function captureAudioChunks(
   stream: MediaStream,
   onChunk: ChunkCallback
 ): Promise<() => void> {
-  if (stream.getAudioTracks().length === 0) {
-    throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
-  }
+  if (stream.getAudioTracks().length === 0) throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+
   const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
-  if (audioContext.state === 'suspended') {
-    audioContext.resume().catch(() => {});
-  }
+  if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
   await audioContext.audioWorklet.addModule(WORKLET_URL);
 
   const source = audioContext.createMediaStreamSource(stream);
-  const samplesPerChunk = Math.floor(
-    (SAMPLE_RATE_CAPTURE * CHUNK_DURATION_MS) / 1000
-  );
   const node = new AudioWorkletNode(audioContext, 'capture-processor', {
-    processorOptions: { chunkSize: samplesPerChunk },
+    processorOptions: { frameSize: FRAME_SAMPLES },
   });
 
   let stopped = false;
-  node.port.onmessage = (e: MessageEvent<{ chunk: Float32Array }>) => {
+  let state: 'idle' | 'speaking' = 'idle';
+  let speechFrames: Int16Array[] = [];
+  let silenceFrameCount = 0;
+
+  function flush() {
+    if (speechFrames.length < MIN_SPEECH_FRAMES) {
+      // Too short — likely noise, not real speech
+      speechFrames = [];
+      silenceFrameCount = 0;
+      state = 'idle';
+      return;
+    }
+    const pcm = concatenateInt16(speechFrames);
+    speechFrames = [];
+    silenceFrameCount = 0;
+    state = 'idle';
+    onChunk(pcm.buffer.slice(0) as ArrayBuffer);
+  }
+
+  node.port.onmessage = (e: MessageEvent<{ frame: Float32Array }>) => {
     if (stopped) return;
-    const float32 = e.data.chunk;
-    const int16_48k = floatTo16BitPcm(float32);
-    const int16_16k = downsampleTo16khz(int16_48k);
-    if (rmsEnergy(int16_16k) < SILENCE_THRESHOLD) return; // skip silent chunks
-    onChunk(int16_16k.buffer.slice(0) as ArrayBuffer);
+
+    const int16_16k = downsampleTo16khz(floatTo16BitPcm(e.data.frame));
+    const silent = rmsEnergy(int16_16k) < SILENCE_RMS;
+
+    if (state === 'idle') {
+      if (!silent) {
+        state = 'speaking';
+        speechFrames.push(int16_16k);
+        silenceFrameCount = 0;
+      }
+      // drop silent frames while idle
+    } else {
+      // state === 'speaking'
+      speechFrames.push(int16_16k);
+
+      if (silent) {
+        silenceFrameCount++;
+        if (silenceFrameCount >= PAUSE_FRAMES_NEEDED) {
+          flush(); // natural pause detected — interpret this utterance
+        }
+      } else {
+        silenceFrameCount = 0;
+        if (speechFrames.length >= MAX_SPEECH_FRAMES) {
+          flush(); // speaker went on too long — send what we have
+        }
+      }
+    }
   };
 
   source.connect(node);
@@ -124,18 +184,12 @@ export async function captureAudioChunks(
 
   const stop = () => {
     stopped = true;
-    try {
-      node.disconnect();
-      source.disconnect();
-      audioContext.close();
-    } catch (_) {
-      // ignore
+    if (state === 'speaking' && speechFrames.length >= MIN_SPEECH_FRAMES) {
+      flush(); // send any remaining speech when user stops
     }
+    try { node.disconnect(); source.disconnect(); audioContext.close(); } catch (_) {}
   };
 
-  stream.getTracks().forEach((t) =>
-    t.addEventListener('ended', stop, { once: true })
-  );
-
+  stream.getTracks().forEach((t) => t.addEventListener('ended', stop, { once: true }));
   return stop;
 }

@@ -11,65 +11,20 @@ import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import type { CaptureMode, PermissionState, TranslationSegment } from './types';
 import './App.css';
 
-function tokenize(s: string): string[] {
-  return s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-}
-
 /**
- * Extracts all n-grams of a given length from a token list.
+ * True if the new line is too similar to the immediately previous line.
+ * With pause-based chunking each chunk is a distinct utterance, so a
+ * simple Jaccard check against the last line is all that is needed.
  */
-function ngrams(words: string[], n: number): Set<string> {
-  const result = new Set<string>();
-  for (let i = 0; i <= words.length - n; i++) {
-    result.add(words.slice(i, i + n).join(' '));
-  }
-  return result;
-}
-
-/**
- * Returns true if the candidate is a duplicate of any recent line.
- *
- * Two-layer check:
- * 1. Jaccard word-overlap ≥ 55% against any single recent line
- *    (catches near-identical full sentences).
- * 2. Any 5-word phrase from the candidate appears verbatim in the
- *    combined n-gram pool of recent lines (catches sentences that are
- *    only partially repeated but still carry the same key content).
- *
- * Window = last 6 lines so A→B→A→B→A alternating patterns are blocked.
- */
-function isDuplicate(candidate: string, recentLines: string[]): boolean {
-  const WINDOW = 6;
-  const JACCARD_THRESHOLD = 0.55;
-  const PHRASE_LEN = 5;
-
-  const recent = recentLines.slice(-WINDOW);
-  const candidateWords = tokenize(candidate);
-
-  // Layer 1: whole-sentence Jaccard
-  for (const line of recent) {
-    const lineWords = tokenize(line);
-    if (lineWords.length === 0 || candidateWords.length === 0) continue;
-    const setA = new Set(candidateWords);
-    const setB = new Set(lineWords);
-    let intersection = 0;
-    setA.forEach((w) => { if (setB.has(w)) intersection++; });
-    const union = new Set([...setA, ...setB]).size;
-    if (intersection / union >= JACCARD_THRESHOLD) return true;
-  }
-
-  // Layer 2: phrase matching — any 5-gram from candidate seen in recent lines
-  if (candidateWords.length >= PHRASE_LEN) {
-    const recentNgrams = new Set<string>();
-    for (const line of recent) {
-      ngrams(tokenize(line), PHRASE_LEN).forEach((ng) => recentNgrams.add(ng));
-    }
-    for (const phrase of ngrams(candidateWords, PHRASE_LEN)) {
-      if (recentNgrams.has(phrase)) return true;
-    }
-  }
-
-  return false;
+function isDuplicate(candidate: string, lastLine: string): boolean {
+  const tok = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean));
+  const a = tok(candidate);
+  const b = tok(lastLine);
+  if (a.size === 0 || b.size === 0) return false;
+  let intersection = 0;
+  a.forEach((w) => { if (b.has(w)) intersection++; });
+  return intersection / new Set([...a, ...b]).size >= 0.65;
 }
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
@@ -204,8 +159,8 @@ function App() {
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
-                const recentTexts = prev.slice(-6).map((s) => s.text);
-                if (isDuplicate(englishLine, recentTexts)) return prev; // too similar to a recent line — skip
+                const lastText = prev[prev.length - 1]?.text ?? '';
+                if (isDuplicate(englishLine, lastText)) return prev; // too similar to previous — skip
                 const ctx = recentContextRef.current;
                 recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
                   .split('\n')

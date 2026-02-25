@@ -5,7 +5,7 @@ const DESKTOP_NO_AUDIO_MESSAGE =
 
 const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
 const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 4000; // 4 s — gives Burmese sentences time to complete before sending
+const CHUNK_DURATION_MS = 8000; // 8 s — gives a speaker time to finish a complete thought before sending
 const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 export async function getCaptureStream(
@@ -49,6 +49,21 @@ function floatTo16BitPcm(float32: Float32Array): Int16Array {
   }
   return int16;
 }
+
+/**
+ * RMS energy of a 16-bit PCM buffer, normalised to 0–1.
+ * Values below ~0.01 are essentially silence or background noise.
+ */
+function rmsEnergy(int16: Int16Array): number {
+  let sum = 0;
+  for (let i = 0; i < int16.length; i++) {
+    const s = int16[i] / 32768;
+    sum += s * s;
+  }
+  return Math.sqrt(sum / int16.length);
+}
+
+const SILENCE_THRESHOLD = 0.01; // below this RMS the chunk is silence — skip it
 
 function downsampleTo16khz(int16At48k: Int16Array): Int16Array {
   const outLen = Math.floor(int16At48k.length / DOWN_RATIO);
@@ -100,6 +115,7 @@ export async function captureAudioChunks(
     const float32 = e.data.chunk;
     const int16_48k = floatTo16BitPcm(float32);
     const int16_16k = downsampleTo16khz(int16_48k);
+    if (rmsEnergy(int16_16k) < SILENCE_THRESHOLD) return; // skip silent chunks
     onChunk(int16_16k.buffer.slice(0) as ArrayBuffer);
   };
 

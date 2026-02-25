@@ -11,6 +11,24 @@ import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import type { CaptureMode, PermissionState, TranslationSegment } from './types';
 import './App.css';
 
+/**
+ * Returns true if the two strings are too similar to both be worth showing.
+ * Uses word-overlap (Jaccard similarity) on lowercased tokens.
+ * Threshold of 0.75 means "75% of words are shared" — catches near-duplicates
+ * while still allowing genuinely new sentences through.
+ */
+function isTooSimilar(a: string, b: string, threshold = 0.75): boolean {
+  const tokenize = (s: string) =>
+    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean));
+  const setA = tokenize(a);
+  const setB = tokenize(b);
+  if (setA.size === 0 || setB.size === 0) return false;
+  let intersection = 0;
+  setA.forEach((w) => { if (setB.has(w)) intersection++; });
+  const union = new Set([...setA, ...setB]).size;
+  return intersection / union >= threshold;
+}
+
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
 const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
@@ -142,21 +160,25 @@ function App() {
             const result = await interpretAudio(pcm, recentContextRef.current || undefined);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
-              const prev = recentContextRef.current;
-              recentContextRef.current = (prev ? prev + '\n' + englishLine : englishLine)
-                .split('\n')
-                .filter(Boolean)
-                .slice(-2)
-                .join('\n');
-              setTranslationSegments((prev) => [
-                ...prev,
-                {
-                  id: ++segmentIdRef.current,
-                  text: englishLine,
-                  shownAt: Date.now(),
-                  burmeseText: result.burmeseText?.trim() || undefined,
-                },
-              ]);
+              setTranslationSegments((prev) => {
+                const lastText = prev[prev.length - 1]?.text ?? '';
+                if (isTooSimilar(lastText, englishLine)) return prev; // duplicate — skip
+                const ctx = recentContextRef.current;
+                recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
+                  .split('\n')
+                  .filter(Boolean)
+                  .slice(-2)
+                  .join('\n');
+                return [
+                  ...prev,
+                  {
+                    id: ++segmentIdRef.current,
+                    text: englishLine,
+                    shownAt: Date.now(),
+                    burmeseText: result.burmeseText?.trim() || undefined,
+                  },
+                ];
+              });
             }
             if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
           } catch (e) {

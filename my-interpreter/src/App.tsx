@@ -11,31 +11,65 @@ import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import type { CaptureMode, PermissionState, TranslationSegment } from './types';
 import './App.css';
 
-/**
- * Jaccard word-overlap similarity between two strings (0–1).
- */
-function jaccardSimilarity(a: string, b: string): number {
-  const tokenize = (s: string) =>
-    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean));
-  const setA = tokenize(a);
-  const setB = tokenize(b);
-  if (setA.size === 0 || setB.size === 0) return 0;
-  let intersection = 0;
-  setA.forEach((w) => { if (setB.has(w)) intersection++; });
-  const union = new Set([...setA, ...setB]).size;
-  return intersection / union;
+function tokenize(s: string): string[] {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
 }
 
 /**
- * Returns true if the candidate line is too similar to ANY of the recent lines.
- * Checks a window of the last 4 lines at a 60% threshold so alternating
- * near-duplicates (A→B→A→B) are caught, not just back-to-back repeats.
+ * Extracts all n-grams of a given length from a token list.
+ */
+function ngrams(words: string[], n: number): Set<string> {
+  const result = new Set<string>();
+  for (let i = 0; i <= words.length - n; i++) {
+    result.add(words.slice(i, i + n).join(' '));
+  }
+  return result;
+}
+
+/**
+ * Returns true if the candidate is a duplicate of any recent line.
+ *
+ * Two-layer check:
+ * 1. Jaccard word-overlap ≥ 55% against any single recent line
+ *    (catches near-identical full sentences).
+ * 2. Any 5-word phrase from the candidate appears verbatim in the
+ *    combined n-gram pool of recent lines (catches sentences that are
+ *    only partially repeated but still carry the same key content).
+ *
+ * Window = last 6 lines so A→B→A→B→A alternating patterns are blocked.
  */
 function isDuplicate(candidate: string, recentLines: string[]): boolean {
-  const THRESHOLD = 0.60;
-  const WINDOW = 4;
-  const window = recentLines.slice(-WINDOW);
-  return window.some((line) => jaccardSimilarity(candidate, line) >= THRESHOLD);
+  const WINDOW = 6;
+  const JACCARD_THRESHOLD = 0.55;
+  const PHRASE_LEN = 5;
+
+  const recent = recentLines.slice(-WINDOW);
+  const candidateWords = tokenize(candidate);
+
+  // Layer 1: whole-sentence Jaccard
+  for (const line of recent) {
+    const lineWords = tokenize(line);
+    if (lineWords.length === 0 || candidateWords.length === 0) continue;
+    const setA = new Set(candidateWords);
+    const setB = new Set(lineWords);
+    let intersection = 0;
+    setA.forEach((w) => { if (setB.has(w)) intersection++; });
+    const union = new Set([...setA, ...setB]).size;
+    if (intersection / union >= JACCARD_THRESHOLD) return true;
+  }
+
+  // Layer 2: phrase matching — any 5-gram from candidate seen in recent lines
+  if (candidateWords.length >= PHRASE_LEN) {
+    const recentNgrams = new Set<string>();
+    for (const line of recent) {
+      ngrams(tokenize(line), PHRASE_LEN).forEach((ng) => recentNgrams.add(ng));
+    }
+    for (const phrase of ngrams(candidateWords, PHRASE_LEN)) {
+      if (recentNgrams.has(phrase)) return true;
+    }
+  }
+
+  return false;
 }
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
@@ -170,7 +204,7 @@ function App() {
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
-                const recentTexts = prev.slice(-4).map((s) => s.text);
+                const recentTexts = prev.slice(-6).map((s) => s.text);
                 if (isDuplicate(englishLine, recentTexts)) return prev; // too similar to a recent line — skip
                 const ctx = recentContextRef.current;
                 recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)

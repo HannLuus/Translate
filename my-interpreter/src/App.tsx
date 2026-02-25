@@ -12,21 +12,30 @@ import type { CaptureMode, PermissionState, TranslationSegment } from './types';
 import './App.css';
 
 /**
- * Returns true if the two strings are too similar to both be worth showing.
- * Uses word-overlap (Jaccard similarity) on lowercased tokens.
- * Threshold of 0.75 means "75% of words are shared" — catches near-duplicates
- * while still allowing genuinely new sentences through.
+ * Jaccard word-overlap similarity between two strings (0–1).
  */
-function isTooSimilar(a: string, b: string, threshold = 0.75): boolean {
+function jaccardSimilarity(a: string, b: string): number {
   const tokenize = (s: string) =>
     new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean));
   const setA = tokenize(a);
   const setB = tokenize(b);
-  if (setA.size === 0 || setB.size === 0) return false;
+  if (setA.size === 0 || setB.size === 0) return 0;
   let intersection = 0;
   setA.forEach((w) => { if (setB.has(w)) intersection++; });
   const union = new Set([...setA, ...setB]).size;
-  return intersection / union >= threshold;
+  return intersection / union;
+}
+
+/**
+ * Returns true if the candidate line is too similar to ANY of the recent lines.
+ * Checks a window of the last 4 lines at a 60% threshold so alternating
+ * near-duplicates (A→B→A→B) are caught, not just back-to-back repeats.
+ */
+function isDuplicate(candidate: string, recentLines: string[]): boolean {
+  const THRESHOLD = 0.60;
+  const WINDOW = 4;
+  const window = recentLines.slice(-WINDOW);
+  return window.some((line) => jaccardSimilarity(candidate, line) >= THRESHOLD);
 }
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
@@ -161,8 +170,8 @@ function App() {
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
-                const lastText = prev[prev.length - 1]?.text ?? '';
-                if (isTooSimilar(lastText, englishLine)) return prev; // duplicate — skip
+                const recentTexts = prev.slice(-4).map((s) => s.text);
+                if (isDuplicate(englishLine, recentTexts)) return prev; // too similar to a recent line — skip
                 const ctx = recentContextRef.current;
                 recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
                   .split('\n')

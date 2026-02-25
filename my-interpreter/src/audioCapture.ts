@@ -5,7 +5,7 @@ const DESKTOP_NO_AUDIO_MESSAGE =
 
 const SAMPLE_RATE_CAPTURE = 48000; // typical from getUserMedia/getDisplayMedia
 const SAMPLE_RATE_TARGET = 16000; // Speech-to-Text expects 16kHz
-const CHUNK_DURATION_MS = 8000; // 8 s — gives a speaker time to finish a complete thought before sending
+const CHUNK_DURATION_MS = 12000; // 12 s — gives a speaker time to fully express a complete idea before sending
 const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 export async function getCaptureStream(

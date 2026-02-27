@@ -31,6 +31,7 @@ const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
 const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
 const MEETING_CONTEXT_STORAGE_KEY = 'interpreter-meeting-context';
+const PERMANENT_GLOSSARY_STORAGE_KEY = 'interpreter-permanent-glossary';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
@@ -45,6 +46,9 @@ function App() {
     });
   }, []);
 
+  const [permanentGlossary, setPermanentGlossary] = useState(() => {
+    return localStorage.getItem(PERMANENT_GLOSSARY_STORAGE_KEY) ?? '';
+  });
   const [meetingContext, setMeetingContext] = useState(() => {
     return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
   });
@@ -122,6 +126,9 @@ function App() {
     localStorage.setItem(TESTING_MODE_STORAGE_KEY, testingMode ? '1' : '0');
   }, [testingMode]);
   useEffect(() => {
+    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, permanentGlossary);
+  }, [permanentGlossary]);
+  useEffect(() => {
     localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
   }, [meetingContext]);
 
@@ -163,7 +170,8 @@ function App() {
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const result = await interpretAudio(pcm, meetingContext);
+            const combinedContext = [permanentGlossary.trim(), meetingContext.trim()].filter(Boolean).join('\n\n');
+            const result = await interpretAudio(pcm, combinedContext);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
@@ -215,7 +223,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, meetingContext]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, permanentGlossary, meetingContext]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -300,16 +308,30 @@ function App() {
         {!active && (
           <details className="app__context-panel">
             <summary>Meeting Briefing & Glossary (Optional)</summary>
-            <p className="app__context-hint">
-              Add company names, acronyms, and people to help the AI spell them correctly.
-            </p>
-            <textarea
-              className="app__context-input"
-              value={meetingContext}
-              onChange={(e) => setMeetingContext(e.target.value)}
-              placeholder="e.g. 'Company: Yoma Heavy Equipment. Brands: New Holland, Case. Acronyms: AMD = Agricultural Machinery Dept. Key people: Hann, Sayar May.'"
-              disabled={active}
-            />
+            
+            <div className="app__context-group">
+              <label className="app__context-label">Permanent Glossary (Company names, acronyms, standard terms)</label>
+              <p className="app__context-hint">Saves across all meetings. Example: "AMD = Agricultural Machinery Dept, MOA = Ministry of Agriculture"</p>
+              <textarea
+                className="app__context-input"
+                value={permanentGlossary}
+                onChange={(e) => setPermanentGlossary(e.target.value)}
+                placeholder="e.g. 'Company: Yoma Heavy Equipment. Brands: New Holland, Case.'"
+                disabled={active}
+              />
+            </div>
+
+            <div className="app__context-group">
+              <label className="app__context-label">Meeting Specific Briefing</label>
+              <p className="app__context-hint">Specific to today's call. Example: "Topic: Q3 Sales with AMD. Key people: Hann, Tun Tun."</p>
+              <textarea
+                className="app__context-input"
+                value={meetingContext}
+                onChange={(e) => setMeetingContext(e.target.value)}
+                placeholder="Add meeting specific context here..."
+                disabled={active}
+              />
+            </div>
           </details>
         )}
 

@@ -30,6 +30,7 @@ function isDuplicate(candidate: string, lastLine: string): boolean {
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
 const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
+const MEETING_CONTEXT_STORAGE_KEY = 'interpreter-meeting-context';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
@@ -43,6 +44,10 @@ function App() {
       message,
     });
   }, []);
+
+  const [meetingContext, setMeetingContext] = useState(() => {
+    return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
+  });
 
   const [mode, setMode] = useState<CaptureMode>(() => {
     const s = localStorage.getItem(MODE_STORAGE_KEY);
@@ -116,6 +121,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem(TESTING_MODE_STORAGE_KEY, testingMode ? '1' : '0');
   }, [testingMode]);
+  useEffect(() => {
+    localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
+  }, [meetingContext]);
 
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
@@ -155,7 +163,7 @@ function App() {
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const result = await interpretAudio(pcm, undefined);
+            const result = await interpretAudio(pcm, meetingContext);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
@@ -207,7 +215,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, meetingContext]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -288,6 +296,22 @@ function App() {
           />
           <span>Testing mode — keep full script</span>
         </label>
+
+        {!active && (
+          <details className="app__context-panel">
+            <summary>Meeting Briefing & Glossary (Optional)</summary>
+            <p className="app__context-hint">
+              Add company names, acronyms, and people to help the AI spell them correctly.
+            </p>
+            <textarea
+              className="app__context-input"
+              value={meetingContext}
+              onChange={(e) => setMeetingContext(e.target.value)}
+              placeholder="e.g. 'Company: Yoma Heavy Equipment. Brands: New Holland, Case. Acronyms: AMD = Agricultural Machinery Dept. Key people: Hann, Sayar May.'"
+              disabled={active}
+            />
+          </details>
+        )}
 
         {mode === 'desktop' && !active && (
           <p className="app__desktop-hint" role="status">

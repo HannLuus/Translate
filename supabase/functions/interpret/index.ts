@@ -17,9 +17,10 @@ Deno.serve(async (req) => {
       });
     }
 
-    const recentContext = req.headers.get('x-translation-context')?.trim() || null;
+    const meetingContextRaw = req.headers.get('x-meeting-context');
+    const meetingContext = meetingContextRaw ? decodeURIComponent(meetingContextRaw) : null;
 
-    const { burmeseText, englishText } = await transcribeAndTranslateAudio(audioBytes, recentContext);
+    const { burmeseText, englishText } = await transcribeAndTranslateAudio(audioBytes, meetingContext);
 
     if (!englishText) {
       return new Response(

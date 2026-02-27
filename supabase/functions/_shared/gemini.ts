@@ -114,16 +114,26 @@ const RETRY_DELAYS_MS = [2000, 4000, 8000]; // 3 retries after initial attempt (
  */
 export async function transcribeAndTranslateAudio(
   audioBytes: Uint8Array,
-  recentContext?: string | null,
+  meetingContext?: string | null,
 ): Promise<{ burmeseText: string; englishText: string }> {
   if (audioBytes.length < MIN_AUDIO_BYTES) return { burmeseText: '', englishText: '' };
 
   const wavBytes = pcmToWav(audioBytes);
   const audioBase64 = bytesToBase64(wavBytes);
 
+  let systemPrompt = AUDIO_INTERPRET_SYSTEM;
+  if (meetingContext?.trim()) {
+    systemPrompt += '\n\nIMPORTANT MEETING CONTEXT & GLOSSARY:\n' +
+      'The following information is provided to help you correctly spell and identify names, acronyms, and industry terms that might be spoken in the audio.\n' +
+      'RULE: Use this to guide your transcription of difficult words, BUT DO NOT hallucinate these terms if they are not actually spoken.\n' +
+      '---\n' +
+      meetingContext.trim() +
+      '\n---';
+  }
+
   const model = getAI().getGenerativeModel({
     model: 'gemini-2.0-flash',
-    systemInstruction: AUDIO_INTERPRET_SYSTEM,
+    systemInstruction: systemPrompt,
     generationConfig: GENERATION_CONFIG,
   });
 

@@ -38,11 +38,6 @@ export async function healthCheck(): Promise<{ ok: boolean; error?: string }> {
   }
 }
 
-/** Header values must not contain newlines; normalize for X-Translation-Context. */
-function headerSafeContext(s: string): string {
-  return s.trim().replace(/\s+/g, ' ').slice(0, 2000);
-}
-
 function isNetworkError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return /failed to fetch|network|connection closed|ERR_CONNECTION/i.test(msg);
@@ -78,11 +73,11 @@ const INTERPRET_RETRY_DELAYS_MS = [3000, 6000]; // 2 retries (3 attempts total) 
 
 export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
-  recentTranslationContext?: string | null,
+  meetingContext?: string | null,
 ): Promise<InterpretResult> {
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
-  if (recentTranslationContext?.trim()) {
-    headers['X-Translation-Context'] = headerSafeContext(recentTranslationContext);
+  if (meetingContext?.trim()) {
+    headers['X-Meeting-Context'] = encodeURIComponent(meetingContext.trim());
   }
   const body = audioPcm16khz.slice(0);
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;

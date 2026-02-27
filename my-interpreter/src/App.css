@@ -281,6 +281,47 @@
   border-radius: 4px;
 }
 
+/* Context Panel */
+.app__context-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.app__context-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #334155;
+  user-select: none;
+}
+
+.app__context-hint {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin: 0.5rem 0;
+}
+
+.app__context-input {
+  width: 100%;
+  min-height: 80px;
+  padding: 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.9rem;
+  color: #1e293b;
+  box-sizing: border-box;
+}
+
+.app__context-input:focus {
+  outline: 2px solid rgba(79, 70, 229, 0.4);
+  border-color: #4f46e5;
+}
+
 /* Permission banner */
 .permission-banner {
   display: flex;

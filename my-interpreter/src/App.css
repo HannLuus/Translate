@@ -424,24 +424,24 @@
 }
 
 .conversation-view__burmese {
-  color: #000000;
+  color: #000000 !important;
   font-size: 0.95rem;
 }
 
 .conversation-view__segment-sep {
-  color: #000000;
+  color: #000000 !important;
   font-weight: bold;
   margin: 0 0.25rem;
 }
 
 .conversation-view__english {
-  color: #000000;
-  font-weight: 700;
+  color: #000000 !important;
+  font-weight: 800;
 }
 
 .conversation-view__response {
-  color: #000000;
-  font-weight: 700;
+  color: #000000 !important;
+  font-weight: 800;
   font-style: italic;
   text-decoration: underline;
 }

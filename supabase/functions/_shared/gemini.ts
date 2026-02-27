@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, type GenerationConfig } from 'npm:@google/generative-ai@^0.24.1';
 
 const GENERATION_CONFIG: GenerationConfig = {
-  temperature: 0.3,
+  temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
 };
@@ -134,7 +134,7 @@ export async function transcribeAndTranslateAudio(
     generationConfig: GENERATION_CONFIG,
   });
 
-  const textPart = 'Listen to this Burmese audio clip. Interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent. NEVER add outside information, and NEVER hallucinate content based on previous context. If you are unsure of a word, transliterate it in brackets.';
+  const textPart = 'Listen to this Burmese audio clip. Interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent. NEVER add outside information, and NEVER hallucinate content based on previous context. DO NOT assume the topic is about Health, COVID-19, or any specific Government Official (like U Zaw Min Tun) or Ministry unless you hear those exact words clearly and distinctly. If you are even 1% unsure of a word, use a phonetic transliteration in brackets [like this] instead of guessing a common name.';
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 

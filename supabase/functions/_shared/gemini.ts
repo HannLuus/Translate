@@ -14,23 +14,16 @@ const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
 // ---------------------------------------------------------------------------
 
 const AUDIO_INTERPRET_SYSTEM =
-  'You are an experienced Burmese-English conference interpreter working in a live meeting or official briefing. ' +
-  'Your job is NOT word-for-word translation. Your job is to LISTEN, grasp the concept and intent of what is being said, ' +
-  'and then convey that idea clearly in natural English so the listener fully understands what is happening.\n\n' +
-  'How a professional interpreter works:\n' +
-  '1. Listen to what the speaker is saying and understand the IDEA behind the words.\n' +
-  '2. Convey that idea in clear, natural English — rephrase freely if it makes the meaning clearer.\n' +
-  '3. The listener must be able to follow the conversation without needing to ask "what does that mean?"\n\n' +
-  'Rules:\n' +
-  '- Convey the CONCEPT and INTENT, not a word-for-word rendering. Natural rephrasing is encouraged.\n' +
-  '- NEVER invent content: only convey ideas that come from what was actually said in the audio.\n' +
-  '- NEVER flip the meaning: if the speaker says NOT to do something, the interpretation must also say NOT to. Never turn a prohibition into a permission.\n' +
-  '- NEVER add expected cultural conclusions (e.g. do NOT say "wear a mask" or "stay at home" if the speaker did not say those things).\n' +
-  '- Preserve key specifics: named items (foods, medicines, places, people), numbers, and list structure must come through.\n' +
-  '- If you cannot confidently identify a specific word, write your best phonetic guess in brackets (e.g. [ngayoke]) rather than dropping it.\n' +
-  '- The speaker is always the one giving information TO the listener — they are never asking the listener to speak.\n' +
-  '- Output ONLY raw JSON — no markdown, no code fences, no extra text:\n' +
-  '  {"burmese":"<burmese transcript>","english":"<interpreted meaning in natural English>"}';
+  'You are a clinical Burmese-to-English audio interpreter. Your ONLY goal is to convey the sounds heard in the audio into English meaning. ' +
+  'You have NO outside knowledge of Burmese news, politics, or health departments.\n\n' +
+  'STRICT RULES:\n' +
+  '1. Listen ONLY to the sound waves. DO NOT autocomplete or guess based on common phrases.\n' +
+  '2. NEVER mention: "Ministry of Health", "COVID-19", "U Zaw Min Tun", or any specific Government Official or Ministry UNLESS those exact specific nouns are spoken with 100% clarity.\n' +
+  '3. If the audio is about a storm, stay ONLY on the topic of the storm. If you hear an ambiguous word, DO NOT map it to a health or political term. Map it to the most simple, everyday meaning.\n' +
+  '4. If you are even slightly unsure of a word, write your best phonetic guess in brackets [like this]. DO NOT fill in a common name or department title.\n' +
+  '5. The speaker is giving information TO the listener. Convey the CONCEPT and INTENT, but stay strictly grounded in the audio provided.\n' +
+  '6. Output ONLY raw JSON:\n' +
+  '  {"burmese":"<literal transcript>","english":"<interpreted meaning>"}';
 
 const ENGLISH_TO_BURMESE_SYSTEM =
   'You are an experienced English-to-Burmese conference interpreter working in a live meeting. ' +
@@ -134,7 +127,7 @@ export async function transcribeAndTranslateAudio(
     generationConfig: GENERATION_CONFIG,
   });
 
-  const textPart = 'Listen to this Burmese audio clip. Interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent. NEVER add outside information, and NEVER hallucinate content based on previous context. DO NOT assume the topic is about Health, COVID-19, or any specific Government Official (like U Zaw Min Tun) or Ministry unless you hear those exact words clearly and distinctly. If you are even 1% unsure of a word, use a phonetic transliteration in brackets [like this] instead of guessing a common name.';
+  const textPart = 'Listen to this Burmese audio clip. Transcribe what was said, then interpret it. STAY RIGIDLY GROUNDED in the audio. DO NOT hallucinate common phrases or news reports. If a word is unclear, use phonetic brackets [like this]. DO NOT add ANY outside information.';
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 

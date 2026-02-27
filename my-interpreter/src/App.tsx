@@ -155,7 +155,7 @@ function App() {
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const result = await interpretAudio(pcm, recentContextRef.current || undefined);
+            const result = await interpretAudio(pcm, undefined);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {

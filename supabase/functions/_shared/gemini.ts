@@ -135,7 +135,7 @@ export async function transcribeAndTranslateAudio(
   });
 
   const textPart = recentContext?.trim()
-    ? `The listener has ALREADY heard the following interpretation — do NOT repeat or rephrase it:\n---\n${recentContext.trim()}\n---\n\nListen to this new audio clip. Interpret ONLY what is genuinely new and not already covered above. If the audio is simply repeating or rephrasing what was already said, return: {"burmese":"","english":""}`
+    ? `The listener has ALREADY heard the following interpretation for context:\n---\n${recentContext.trim()}\n---\n\nListen to this new audio clip. Interpret the meaning into clear, natural English as a conference interpreter would. If the speaker is repeating a point for emphasis or a new speaker is echoing a previous statement, you may start your interpretation with "Again," or "As mentioned," to provide continuity. HOWEVER, avoid verbatim or redundant output if the audio provides no new value. If the clip is truly just a repeat of what was already covered, return: {"burmese":"","english":""}`
     : 'Listen to this Burmese audio clip. Interpret the meaning into clear, natural English as a conference interpreter would — conveying the concept and intent, not just the literal words.';
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;

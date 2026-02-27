@@ -165,7 +165,7 @@ function App() {
                 recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
                   .split('\n')
                   .filter(Boolean)
-                  .slice(-2)
+                  .slice(-5)
                   .join('\n');
                 return [
                   ...prev,

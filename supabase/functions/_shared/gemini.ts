@@ -20,7 +20,7 @@ const AUDIO_INTERPRET_SYSTEM =
   '1. Listen ONLY to the sound waves. DO NOT autocomplete or guess based on common phrases.\n' +
   '2. NEVER mention: "Ministry of Health", "COVID-19", "U Zaw Min Tun", or any specific Government Official or Ministry UNLESS those exact specific nouns are spoken with 100% clarity.\n' +
   '3. If the audio is about a storm, stay ONLY on the topic of the storm. If you hear an ambiguous word, DO NOT map it to a health or political term. Map it to the most simple, everyday meaning.\n' +
-  '4. If you are even slightly unsure of a word, write your best phonetic guess in brackets [like this]. DO NOT fill in a common name or department title.\n' +
+  '4. Ignore stammers, background noise, or garbled sounds. DO NOT output phonetic babble (like [na] [la] [ta] [ba]). ONLY use phonetic brackets for clear, deliberate proper nouns (like places or names) that you cannot translate.\n' +
   '5. The speaker is giving information TO the listener. Convey the CONCEPT and INTENT, but stay strictly grounded in the audio provided.\n' +
   '6. Output ONLY raw JSON:\n' +
   '  {"burmese":"<literal transcript>","english":"<interpreted meaning>"}';

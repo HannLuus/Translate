@@ -35,6 +35,42 @@ const PERMANENT_GLOSSARY_STORAGE_KEY = 'interpreter-permanent-glossary';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
+export type GlossaryEntry = { id: number; term: string; meaning: string };
+
+function parseGlossaryString(str: string): GlossaryEntry[] {
+  const entries: GlossaryEntry[] = [];
+  const lines = str.split(/[\n,;]/).map((s) => s.trim()).filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^(.+?)\s*[=:]\s*(.+)$/);
+    if (match) {
+      entries.push({ id: Date.now() + Math.random(), term: match[1].trim(), meaning: match[2].trim() });
+    }
+  }
+  return entries;
+}
+
+function loadGlossaryFromStorage(): GlossaryEntry[] {
+  const raw = localStorage.getItem(PERMANENT_GLOSSARY_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((e) => e && typeof e.term === 'string' && typeof e.meaning === 'string')) {
+      return parsed.map((e) => ({ id: e.id ?? Date.now() + Math.random(), term: e.term.trim(), meaning: e.meaning.trim() }));
+    }
+    if (typeof parsed === 'string') return parseGlossaryString(parsed);
+    return [];
+  } catch {
+    return parseGlossaryString(raw);
+  }
+}
+
+function glossaryEntriesToText(entries: GlossaryEntry[]): string {
+  return entries
+    .filter((e) => e.term.trim() || e.meaning.trim())
+    .map((e) => `${e.term.trim() || '(term)'} = ${e.meaning.trim() || '(meaning)'}`)
+    .join('\n');
+}
+
 function App() {
   const errorLogRef = useRef<ErrorLogEntry[]>([]);
 
@@ -46,9 +82,8 @@ function App() {
     });
   }, []);
 
-  const [permanentGlossary, setPermanentGlossary] = useState(() => {
-    return localStorage.getItem(PERMANENT_GLOSSARY_STORAGE_KEY) ?? '';
-  });
+  const [glossaryEntries, setGlossaryEntries] = useState<GlossaryEntry[]>(loadGlossaryFromStorage);
+  const [editingGlossaryId, setEditingGlossaryId] = useState<number | null>(null);
   const [meetingContext, setMeetingContext] = useState(() => {
     return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
   });
@@ -126,8 +161,8 @@ function App() {
     localStorage.setItem(TESTING_MODE_STORAGE_KEY, testingMode ? '1' : '0');
   }, [testingMode]);
   useEffect(() => {
-    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, permanentGlossary);
-  }, [permanentGlossary]);
+    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
+  }, [glossaryEntries]);
   useEffect(() => {
     localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
   }, [meetingContext]);
@@ -170,7 +205,7 @@ function App() {
       const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const combinedContext = [permanentGlossary.trim(), meetingContext.trim()].filter(Boolean).join('\n\n');
+            const combinedContext = [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n');
             const result = await interpretAudio(pcm, combinedContext);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
@@ -223,7 +258,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, permanentGlossary, meetingContext]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, glossaryEntries, meetingContext]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -311,14 +346,91 @@ function App() {
             
             <div className="app__context-group">
               <label className="app__context-label">Permanent Glossary (Company names, acronyms, standard terms)</label>
-              <p className="app__context-hint">Saves across all meetings. Example: "AMD = Agricultural Machinery Dept, MOA = Ministry of Agriculture"</p>
-              <textarea
-                className="app__context-input"
-                value={permanentGlossary}
-                onChange={(e) => setPermanentGlossary(e.target.value)}
-                placeholder="e.g. 'Company: Yoma Heavy Equipment. Brands: New Holland, Case.'"
-                disabled={active}
-              />
+              <p className="app__context-hint">Saves across all meetings. Add, edit, or remove entries below.</p>
+              <div className="app__glossary-list">
+                {glossaryEntries.map((entry) => (
+                  <div key={entry.id} className="app__glossary-row">
+                    {editingGlossaryId === entry.id ? (
+                      <>
+                        <input
+                          className="app__glossary-input"
+                          value={entry.term}
+                          onChange={(e) =>
+                            setGlossaryEntries((prev) =>
+                              prev.map((x) => (x.id === entry.id ? { ...x, term: e.target.value } : x))
+                            )
+                          }
+                          placeholder="Term / acronym"
+                        />
+                        <input
+                          className="app__glossary-input"
+                          value={entry.meaning}
+                          onChange={(e) =>
+                            setGlossaryEntries((prev) =>
+                              prev.map((x) => (x.id === entry.id ? { ...x, meaning: e.target.value } : x))
+                            )
+                          }
+                          placeholder="Meaning"
+                        />
+                        <button
+                          type="button"
+                          className="app__glossary-btn app__glossary-btn--save"
+                          onClick={() => setEditingGlossaryId(null)}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="app__glossary-btn app__glossary-btn--cancel"
+                          onClick={() => {
+                            setEditingGlossaryId(null);
+                            if (!entry.term.trim() && !entry.meaning.trim()) {
+                              setGlossaryEntries((prev) => prev.filter((e) => e.id !== entry.id));
+                            }
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="app__glossary-term">{entry.term || '(term)'}</span>
+                        <span className="app__glossary-meaning">{entry.meaning || '(meaning)'}</span>
+                        <button
+                          type="button"
+                          className="app__glossary-btn app__glossary-btn--edit"
+                          onClick={() => setEditingGlossaryId(entry.id)}
+                          aria-label="Edit entry"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="app__glossary-btn app__glossary-btn--delete"
+                          onClick={() => {
+                            setGlossaryEntries((prev) => prev.filter((e) => e.id !== entry.id));
+                            if (editingGlossaryId === entry.id) setEditingGlossaryId(null);
+                          }}
+                          aria-label="Delete entry"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="app__glossary-btn app__glossary-btn--add"
+                onClick={() => {
+                  const id = Date.now();
+                  setGlossaryEntries((prev) => [...prev, { id, term: '', meaning: '' }]);
+                  setEditingGlossaryId(id);
+                }}
+              >
+                Add new entry
+              </button>
             </div>
 
             <div className="app__context-group">

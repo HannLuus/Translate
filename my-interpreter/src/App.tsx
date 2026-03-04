@@ -84,6 +84,8 @@ function App() {
 
   const [glossaryEntries, setGlossaryEntries] = useState<GlossaryEntry[]>(loadGlossaryFromStorage);
   const [editingGlossaryId, setEditingGlossaryId] = useState<number | null>(null);
+  const [glossarySaveFeedback, setGlossarySaveFeedback] = useState(false);
+  const [briefingSaveFeedback, setBriefingSaveFeedback] = useState(false);
   const [meetingContext, setMeetingContext] = useState(() => {
     return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
   });
@@ -431,11 +433,22 @@ function App() {
               >
                 Add new entry
               </button>
+              <button
+                type="button"
+                className="app__glossary-btn app__glossary-btn--save-glossary"
+                onClick={() => {
+                  localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
+                  setGlossarySaveFeedback(true);
+                  window.setTimeout(() => setGlossarySaveFeedback(false), 2000);
+                }}
+              >
+                {glossarySaveFeedback ? 'Saved!' : 'Save glossary'}
+              </button>
             </div>
 
             <div className="app__context-group">
               <label className="app__context-label">Meeting Specific Briefing</label>
-              <p className="app__context-hint">Specific to today's call. Example: "Topic: Q3 Sales with AMD. Key people: Hann, Tun Tun."</p>
+              <p className="app__context-hint">Specific to today's call. Saved briefing is sent to the AI when you start interpretation.</p>
               <textarea
                 className="app__context-input"
                 value={meetingContext}
@@ -443,6 +456,29 @@ function App() {
                 placeholder="Add meeting specific context here..."
                 disabled={active}
               />
+              <div className="app__context-briefing-actions">
+                <button
+                  type="button"
+                  className="app__context-save-btn"
+                  onClick={() => {
+                    localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
+                    setBriefingSaveFeedback(true);
+                    window.setTimeout(() => setBriefingSaveFeedback(false), 2000);
+                  }}
+                >
+                  {briefingSaveFeedback ? 'Saved!' : 'Save meeting briefing'}
+                </button>
+                <button
+                  type="button"
+                  className="app__context-clear-btn"
+                  onClick={() => {
+                    setMeetingContext('');
+                    localStorage.removeItem(MEETING_CONTEXT_STORAGE_KEY);
+                  }}
+                >
+                  Clear for next meeting
+                </button>
+              </div>
             </div>
           </details>
         )}

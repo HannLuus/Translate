@@ -85,6 +85,7 @@ function App() {
   const [glossaryEntries, setGlossaryEntries] = useState<GlossaryEntry[]>(loadGlossaryFromStorage);
   const [editingGlossaryId, setEditingGlossaryId] = useState<number | null>(null);
   const [glossarySaveFeedback, setGlossarySaveFeedback] = useState(false);
+  const [glossaryExpanded, setGlossaryExpanded] = useState(false);
   const [briefingSaveFeedback, setBriefingSaveFeedback] = useState(false);
   const [meetingContext, setMeetingContext] = useState(() => {
     return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
@@ -347,9 +348,30 @@ function App() {
             <summary>Meeting Briefing & Glossary (Optional)</summary>
             
             <div className="app__context-group">
-              <label className="app__context-label">Permanent Glossary (Company names, acronyms, standard terms)</label>
-              <p className="app__context-hint">Saves across all meetings. Add, edit, or remove entries below.</p>
-              <div className="app__glossary-list">
+              <div className="app__glossary-summary-wrap">
+                <button
+                  type="button"
+                  className="app__glossary-summary-btn"
+                  onClick={() => setGlossaryExpanded((e) => !e)}
+                  aria-expanded={glossaryExpanded}
+                >
+                  <span className="app__glossary-summary-label">
+                    Permanent Glossary (Company names, acronyms, standard terms)
+                  </span>
+                  <span className="app__glossary-summary-count">
+                    {glossaryEntries.length} {glossaryEntries.length === 1 ? 'entry' : 'entries'}
+                    {glossarySaveFeedback ? ' • Saved!' : ' saved'}
+                  </span>
+                  <span className="app__glossary-summary-chevron" aria-hidden>{glossaryExpanded ? '▼' : '▶'}</span>
+                </button>
+              </div>
+              {!glossaryExpanded && (
+                <p className="app__context-hint">Click above to add, edit, or remove entries. Saved entries are used in every meeting.</p>
+              )}
+              {glossaryExpanded && (
+                <>
+                  <p className="app__context-hint">Saves across all meetings. Add, edit, or remove entries below, then Save glossary.</p>
+                  <div className="app__glossary-list">
                 {glossaryEntries.map((entry) => (
                   <div key={entry.id} className="app__glossary-row">
                     {editingGlossaryId === entry.id ? (
@@ -439,11 +461,14 @@ function App() {
                 onClick={() => {
                   localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
                   setGlossarySaveFeedback(true);
+                  setGlossaryExpanded(false);
                   window.setTimeout(() => setGlossarySaveFeedback(false), 2000);
                 }}
               >
                 {glossarySaveFeedback ? 'Saved!' : 'Save glossary'}
               </button>
+                </>
+              )}
             </div>
 
             <div className="app__context-group">

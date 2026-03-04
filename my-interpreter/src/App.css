@@ -334,6 +334,49 @@
   border-color: #4f46e5;
 }
 
+/* Permanent glossary collapsible summary */
+.app__glossary-summary-wrap {
+  margin-bottom: 0.25rem;
+}
+
+.app__glossary-summary-btn {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.5rem 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: #1e293b;
+  font-weight: 600;
+  font-size: 0.9rem;
+  border-radius: 6px;
+}
+
+.app__glossary-summary-btn:hover {
+  background: #f1f5f9;
+}
+
+.app__glossary-summary-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.app__glossary-summary-count {
+  font-weight: 500;
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.app__glossary-summary-chevron {
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
 /* Permanent glossary list */
 .app__glossary-list {
   display: flex;

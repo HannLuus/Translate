@@ -6,9 +6,9 @@ import { ConversationView } from './components/ConversationView';
 import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { getCaptureStream, captureAudioChunks } from './audioCapture';
-import { interpretAudio, healthCheck, getApiBase } from './api';
+import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
-import type { CaptureMode, PermissionState, TranslationSegment } from './types';
+import type { CaptureMode, PermissionState, TranslationSegment, CleanSummarizeResult } from './types';
 import './App.css';
 
 /**
@@ -119,6 +119,9 @@ function App() {
   const [backendError, setBackendError] = useState<string | null>(null);
   const [captureStream, setCaptureStream] = useState<MediaStream | null>(null);
   const [interpretStatus, setInterpretStatus] = useState<'idle' | 'listening' | 'processing'>('idle');
+  const [cleanSummarizeStatus, setCleanSummarizeStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [cleanSummarizeResult, setCleanSummarizeResult] = useState<CleanSummarizeResult | null>(null);
+  const [cleanSummarizeError, setCleanSummarizeError] = useState<string | null>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   /** Last 2–3 translation segments for continuity (sent to backend). */
@@ -580,12 +583,112 @@ function App() {
           <div className="app__testing-actions">
             <motion.button
               type="button"
+              className="app__btn app__btn--start"
+              disabled={
+                cleanSummarizeStatus === 'loading' ||
+                !translationSegments.some((s) => s.text.trim() !== '')
+              }
+              onClick={async () => {
+                setCleanSummarizeError(null);
+                setCleanSummarizeStatus('loading');
+                const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
+                const combinedContext = [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n');
+                try {
+                  const result = await cleanAndSummarize(fullScript || '', combinedContext || undefined);
+                  setCleanSummarizeResult(result);
+                  setCleanSummarizeStatus('success');
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : 'Clean & summarize failed';
+                  setCleanSummarizeError(msg);
+                  setCleanSummarizeStatus('error');
+                  pushErrorLog('error', `Clean & summarize: ${msg}`);
+                }
+              }}
+              whileTap={{ scale: 0.98 }}
+            >
+              {cleanSummarizeStatus === 'loading' ? 'Cleaning…' : 'Clean & summarize'}
+            </motion.button>
+            <motion.button
+              type="button"
               className="app__btn app__btn--secondary"
-              onClick={() => setTranslationSegments([])}
+              disabled={cleanSummarizeStatus === 'loading'}
+              onClick={() => {
+                setTranslationSegments([]);
+                setCleanSummarizeStatus('idle');
+                setCleanSummarizeResult(null);
+                setCleanSummarizeError(null);
+              }}
               whileTap={{ scale: 0.98 }}
             >
               Clear script (new run)
             </motion.button>
+          </div>
+        )}
+
+        {cleanSummarizeStatus === 'error' && cleanSummarizeError && (
+          <div className="app__clean-error">
+            <p>{cleanSummarizeError}</p>
+            <button
+              type="button"
+              className="app__btn app__btn--secondary"
+              onClick={() => {
+                setCleanSummarizeStatus('idle');
+                setCleanSummarizeError(null);
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {cleanSummarizeStatus === 'success' && cleanSummarizeResult && (
+          <div className="app__clean-result">
+            <h3 className="app__clean-result-title">Cleaned transcript & summary</h3>
+            <p className="app__clean-result-hint">Based on your glossary and meeting briefing.</p>
+            <div className="app__clean-transcript-wrap">
+              <label className="app__clean-label">Cleaned transcript</label>
+              <div className="app__clean-transcript" role="document">
+                {cleanSummarizeResult.cleanedTranscript || '(Empty)'}
+              </div>
+              <button
+                type="button"
+                className="app__btn app__btn--secondary app__clean-download"
+                onClick={() => {
+                  const blob = new Blob([cleanSummarizeResult.cleanedTranscript || ''], { type: 'text/plain' });
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `meeting-cleaned-${new Date().toISOString().slice(0, 10)}.txt`;
+                  a.click();
+                  URL.revokeObjectURL(a.href);
+                }}
+              >
+                Download cleaned transcript
+              </button>
+            </div>
+            <div className="app__clean-summary-wrap">
+              <label className="app__clean-label">Summary</label>
+              <p className="app__clean-summary">{cleanSummarizeResult.summary || '(No summary)'}</p>
+              {cleanSummarizeResult.keyPoints && cleanSummarizeResult.keyPoints.length > 0 && (
+                <>
+                  <label className="app__clean-label">Key points</label>
+                  <ul className="app__clean-keypoints">
+                    {cleanSummarizeResult.keyPoints.map((point, i) => (
+                      <li key={i}>{point}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+            <button
+              type="button"
+              className="app__btn app__btn--secondary"
+              onClick={() => {
+                setCleanSummarizeStatus('idle');
+                setCleanSummarizeResult(null);
+              }}
+            >
+              Dismiss
+            </button>
           </div>
         )}
 

@@ -191,6 +191,98 @@ export async function transcribeAndTranslateAudio(
   throw lastError;
 }
 
+const CLEAN_AND_SUMMARIZE_SYSTEM =
+  'You are a meeting transcript editor and summarizer. You receive a raw live-interpretation transcript and optional meeting context (glossary, briefing).\n\n' +
+  'TASKS:\n' +
+  '1. CLEAN: Correct the transcript using the meeting context. Fix misinterpreted terms (e.g. if the context says the company sells tractors, do not leave in medicine or unrelated terms that were likely misheard). Fix names and acronyms using the glossary. Keep the rest of the content intact; only correct clear errors.\n' +
+  '2. SUMMARIZE: Write a short meeting summary (2–4 sentences) and 3–5 key points.\n\n' +
+  'OUTPUT: Reply with ONLY valid JSON, no markdown or extra text:\n' +
+  '{"cleanedTranscript":"<full cleaned transcript>","summary":"<short summary>","keyPoints":["<point 1>","<point 2>",...]}';
+
+const MAX_TRANSCRIPT_CHARS = 60_000;
+
+/** Clean transcript using meeting context and produce summary + key points (Otter-style). */
+export async function cleanTranscriptAndSummarize(
+  transcript: string,
+  meetingContext?: string | null,
+): Promise<{ cleanedTranscript: string; summary: string; keyPoints: string[] }> {
+  const trimmed = transcript?.trim() ?? '';
+  if (!trimmed) {
+    return { cleanedTranscript: '', summary: '', keyPoints: [] };
+  }
+
+  const truncated = trimmed.length > MAX_TRANSCRIPT_CHARS;
+  const toSend = truncated ? trimmed.slice(-MAX_TRANSCRIPT_CHARS) : trimmed;
+
+  let systemPrompt = CLEAN_AND_SUMMARIZE_SYSTEM;
+  if (meetingContext?.trim()) {
+    systemPrompt += '\n\nMEETING CONTEXT (use this to correct terms and stay on topic):\n---\n' + meetingContext.trim() + '\n---';
+  }
+  if (truncated) {
+    systemPrompt += '\n\nThe transcript you receive is the final portion of a long meeting; the beginning was omitted due to length. Clean and summarize based on what you receive.';
+  }
+
+  const model = getAI().getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    systemInstruction: systemPrompt,
+    generationConfig: GENERATION_CONFIG,
+  });
+
+  const userMessage = `Process this meeting transcript. Clean it using the meeting context, then provide the summary and key points. Output only the JSON object.\n\nTRANSCRIPT:\n\n${toSend}`;
+  const maxAttempts = 1 + RETRY_DELAYS_MS.length;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      if (attempt > 0) {
+        await delay(RETRY_DELAYS_MS[attempt - 1]);
+        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+      }
+
+      const result = await model.generateContent(userMessage);
+      const resp = result.response;
+
+      if (!resp?.candidates?.length) {
+        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
+        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      }
+
+      const candidate = resp.candidates[0];
+      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
+      }
+
+      const raw = (candidate.content?.parts?.[0]?.text ?? '').trim();
+      if (!raw) {
+        const fallbackCleaned = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
+        return { cleanedTranscript: fallbackCleaned, summary: 'Summary unavailable.', keyPoints: [] };
+      }
+
+      try {
+        const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/g, '').trim();
+        const parsed = JSON.parse(json) as { cleanedTranscript?: string; summary?: string; keyPoints?: string[] };
+        let cleaned = typeof parsed.cleanedTranscript === 'string' ? parsed.cleanedTranscript.trim() : toSend;
+        if (truncated) {
+          cleaned = '[Earlier part of the meeting was omitted due to length.]\n\n' + cleaned;
+        }
+        return {
+          cleanedTranscript: cleaned,
+          summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : 'Summary unavailable.',
+          keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.filter((p): p is string => typeof p === 'string').slice(0, 10) : [],
+        };
+      } catch {
+        const fallback = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
+        return { cleanedTranscript: fallback, summary: 'Summary unavailable.', keyPoints: [] };
+      }
+    } catch (e) {
+      lastError = e;
+      if (attempt === maxAttempts - 1 || !isRetryableError(e)) throw e;
+    }
+  }
+
+  throw lastError;
+}
+
 /** English → Burmese text translation (used by response / response-audio functions). */
 export async function translateWithGemini(
   text: string,

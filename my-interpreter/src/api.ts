@@ -1,4 +1,4 @@
-import type { InterpretResult, ResponseResult } from './types';
+import type { CleanSummarizeResult, InterpretResult, ResponseResult } from './types';
 
 /**
  * Supabase Edge Functions base URL.
@@ -114,6 +114,23 @@ export async function responseTranslate(englishText: string): Promise<ResponseRe
     throw new Error((err as { error?: string }).error ?? 'Response failed');
   }
   return res.json() as Promise<ResponseResult>;
+}
+
+/** POST /functions/v1/clean-and-summarize – clean transcript using briefing and return summary. */
+export async function cleanAndSummarize(
+  transcript: string,
+  meetingContext?: string | null,
+): Promise<CleanSummarizeResult> {
+  const res = await fetch(`${API_BASE}/clean-and-summarize`, {
+    method: 'POST',
+    headers: baseHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ transcript, meetingContext: meetingContext ?? null }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error((err as { error?: string }).error ?? 'Clean & summarize failed');
+  }
+  return res.json() as Promise<CleanSummarizeResult>;
 }
 
 export interface ResponseAudioResult {

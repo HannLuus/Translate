@@ -155,7 +155,90 @@
 }
 
 .app__testing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+.app__clean-error {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(220, 38, 38, 0.1);
+  border-radius: 8px;
+  color: #dc2626;
+}
+
+.app__clean-error p {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+.app__clean-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.app__clean-result-title {
+  margin: 0 0 0.25rem 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.app__clean-result-hint {
+  margin: 0 0 1rem 0;
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.app__clean-transcript-wrap,
+.app__clean-summary-wrap {
+  margin-bottom: 1rem;
+}
+
+.app__clean-label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+  margin-bottom: 0.35rem;
+}
+
+.app__clean-transcript {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0.5rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-bottom: 0.5rem;
+}
+
+.app__clean-download {
+  margin-bottom: 0.5rem;
+}
+
+.app__clean-summary {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #334155;
+}
+
+.app__clean-keypoints {
+  margin: 0.25rem 0 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #334155;
 }
 
 .app__error {

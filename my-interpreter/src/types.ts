@@ -11,6 +11,12 @@ export interface ResponseResult {
   audioBase64: string | null;
 }
 
+export interface CleanSummarizeResult {
+  cleanedTranscript: string;
+  summary: string;
+  keyPoints?: string[];
+}
+
 export interface PermissionState {
   tabAudio: 'unknown' | 'granted' | 'blocked' | 'unsupported';
   microphone: 'unknown' | 'granted' | 'blocked';

@@ -32,6 +32,7 @@ const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
 const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
 const MEETING_CONTEXT_STORAGE_KEY = 'interpreter-meeting-context';
 const PERMANENT_GLOSSARY_STORAGE_KEY = 'interpreter-permanent-glossary';
+const USE_GLOSSARY_BRIEFING_STORAGE_KEY = 'interpreter-use-glossary-briefing';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
@@ -89,6 +90,10 @@ function App() {
   const [briefingSaveFeedback, setBriefingSaveFeedback] = useState(false);
   const [meetingContext, setMeetingContext] = useState(() => {
     return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
+  });
+  const [useGlossaryAndBriefing, setUseGlossaryAndBriefing] = useState(() => {
+    const stored = localStorage.getItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY);
+    return stored !== '0';
   });
 
   const [mode, setMode] = useState<CaptureMode>(() => {
@@ -172,6 +177,9 @@ function App() {
   useEffect(() => {
     localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
   }, [meetingContext]);
+  useEffect(() => {
+    localStorage.setItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY, useGlossaryAndBriefing ? '1' : '0');
+  }, [useGlossaryAndBriefing]);
 
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
@@ -208,11 +216,13 @@ function App() {
       setInterpretStatus('listening');
       await requestWakeLock();
 
-      const stop = await captureAudioChunks(stream, async (pcm) => {
+        const stop = await captureAudioChunks(stream, async (pcm) => {
           try {
             setInterpretStatus('processing');
-            const combinedContext = [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n');
-            const result = await interpretAudio(pcm, combinedContext);
+            const combinedContext = useGlossaryAndBriefing
+              ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
+              : '';
+            const result = await interpretAudio(pcm, combinedContext || undefined);
             const englishLine = result.englishText ?? '';
             if (englishLine) {
               setTranslationSegments((prev) => {
@@ -264,7 +274,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, glossaryEntries, meetingContext]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, glossaryEntries, meetingContext, useGlossaryAndBriefing]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -349,7 +359,14 @@ function App() {
         {!active && (
           <details className="app__context-panel">
             <summary>Meeting Briefing & Glossary (Optional)</summary>
-            
+            <label className="app__glossary-use-toggle" title="Turn off for face-to-face or casual conversations so the interpreter does not use company terms or meeting context.">
+              <input
+                type="checkbox"
+                checked={useGlossaryAndBriefing}
+                onChange={(e) => setUseGlossaryAndBriefing(e.target.checked)}
+              />
+              <span>Use glossary and briefing in interpretation</span>
+            </label>
             <div className="app__context-group">
               <div className="app__glossary-summary-wrap">
                 <button
@@ -369,7 +386,7 @@ function App() {
                 </button>
               </div>
               {!glossaryExpanded && (
-                <p className="app__context-hint">Click above to add, edit, or remove entries. Saved entries are used in every meeting.</p>
+                <p className="app__context-hint">Click above to add, edit, or remove entries. Used in interpretation when the option above is checked.</p>
               )}
               {glossaryExpanded && (
                 <>
@@ -447,36 +464,38 @@ function App() {
                   </div>
                 ))}
               </div>
-              <button
-                type="button"
-                className="app__glossary-btn app__glossary-btn--add"
-                onClick={() => {
-                  const id = Date.now();
-                  setGlossaryEntries((prev) => [...prev, { id, term: '', meaning: '' }]);
-                  setEditingGlossaryId(id);
-                }}
-              >
-                Add new entry
-              </button>
-              <button
-                type="button"
-                className="app__glossary-btn app__glossary-btn--save-glossary"
-                onClick={() => {
-                  localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
-                  setGlossarySaveFeedback(true);
-                  setGlossaryExpanded(false);
-                  window.setTimeout(() => setGlossarySaveFeedback(false), 2000);
-                }}
-              >
-                {glossarySaveFeedback ? 'Saved!' : 'Save glossary'}
-              </button>
+              <div className="app__glossary-actions">
+                <button
+                  type="button"
+                  className="app__glossary-btn app__glossary-btn--add"
+                  onClick={() => {
+                    const id = Date.now();
+                    setGlossaryEntries((prev) => [...prev, { id, term: '', meaning: '' }]);
+                    setEditingGlossaryId(id);
+                  }}
+                >
+                  Add new entry
+                </button>
+                <button
+                  type="button"
+                  className="app__glossary-btn app__glossary-btn--save-glossary"
+                  onClick={() => {
+                    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
+                    setGlossarySaveFeedback(true);
+                    setGlossaryExpanded(false);
+                    window.setTimeout(() => setGlossarySaveFeedback(false), 2000);
+                  }}
+                >
+                  {glossarySaveFeedback ? 'Saved!' : 'Save glossary'}
+                </button>
+              </div>
                 </>
               )}
             </div>
 
             <div className="app__context-group">
               <label className="app__context-label">Meeting Specific Briefing</label>
-              <p className="app__context-hint">Specific to today's call. Saved briefing is sent to the AI when you start interpretation.</p>
+              <p className="app__context-hint">Specific to today's call. Sent to the AI when you start interpretation if "Use glossary and briefing" is on.</p>
               <textarea
                 className="app__context-input"
                 value={meetingContext}
@@ -592,7 +611,9 @@ function App() {
                 setCleanSummarizeError(null);
                 setCleanSummarizeStatus('loading');
                 const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
-                const combinedContext = [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n');
+                const combinedContext = useGlossaryAndBriefing
+                  ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
+                  : '';
                 try {
                   const result = await cleanAndSummarize(fullScript || '', combinedContext || undefined);
                   setCleanSummarizeResult(result);
@@ -644,7 +665,9 @@ function App() {
         {cleanSummarizeStatus === 'success' && cleanSummarizeResult && (
           <div className="app__clean-result">
             <h3 className="app__clean-result-title">Cleaned transcript & summary</h3>
-            <p className="app__clean-result-hint">Based on your glossary and meeting briefing.</p>
+            <p className="app__clean-result-hint">
+              {useGlossaryAndBriefing ? 'Based on your glossary and meeting briefing.' : 'Cleaned without glossary or briefing.'}
+            </p>
             <div className="app__clean-transcript-wrap">
               <label className="app__clean-label">Cleaned transcript</label>
               <div className="app__clean-transcript" role="document">

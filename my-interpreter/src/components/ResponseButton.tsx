@@ -1,14 +1,8 @@
 import { useState, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Mic } from 'lucide-react';
-import { responseAudio } from '../api';
+import { responseAudio, type ResponseAudioResult } from '../api';
 import type { ResponseResult } from '../types';
-
-interface ResponseAudioResult {
-  englishText: string;
-  burmeseText: string;
-  audioBase64: string | null;
-}
 
 interface ResponseButtonProps {
   onResult: (result: ResponseResult) => void;
@@ -27,10 +21,15 @@ const WORKLET_URL = new URL(
   import.meta.url
 ).href;
 
-function floatTo16BitPcm(float32: Float32Array): ArrayBuffer {
-  const int16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const s = Math.max(-1, Math.min(1, float32[i]));
+/** Convert worklet Float32Array frame to 16-bit PCM. Guards against null/undefined and zero length. */
+function floatTo16BitPcm(frame: Float32Array | null | undefined): ArrayBuffer {
+  if (frame == null || !(frame instanceof Float32Array) || frame.length === 0) {
+    return new Int16Array(0).buffer;
+  }
+  const len = frame.length;
+  const int16 = new Int16Array(len);
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, frame[i]));
     int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return int16.buffer;
@@ -64,11 +63,18 @@ export function ResponseButton({
         const source = audioContext.createMediaStreamSource(stream);
         const buffer: Int16Array[] = [];
         const node = new AudioWorkletNode(audioContext, 'capture-processor', {
-          processorOptions: { chunkSize: 4096 },
+          processorOptions: { frameSize: 4096 },
         });
-        node.port.onmessage = (e: MessageEvent<{ chunk: Float32Array }>) => {
-          const int16 = new Int16Array(floatTo16BitPcm(e.data.chunk) as ArrayBuffer);
-          buffer.push(int16);
+        node.port.onmessage = (e: MessageEvent<{ frame?: Float32Array }>) => {
+          try {
+            const data = e?.data;
+            const frame = data && (data as { frame?: Float32Array }).frame;
+            if (frame == null || typeof (frame as Float32Array).length !== 'number') return;
+            const ab = floatTo16BitPcm(frame instanceof Float32Array ? frame : undefined);
+            if (ab.byteLength > 0) buffer.push(new Int16Array(ab));
+          } catch {
+            // Defensive: malformed worklet messages must not break recording
+          }
         };
         source.connect(node);
         node.connect(audioContext.destination);
@@ -79,10 +85,11 @@ export function ResponseButton({
           source.disconnect();
           audioContext.close();
           stream.getTracks().forEach((t) => t.stop());
-          const totalLength = buffer.reduce((acc, b) => acc + b.length, 0);
+          const valid = buffer.filter((b) => b && typeof b.length === 'number');
+          const totalLength = valid.reduce((acc, b) => acc + b.length, 0);
           const merged = new Int16Array(totalLength);
           let offset = 0;
-          for (const b of buffer) {
+          for (const b of valid) {
             merged.set(b, offset);
             offset += b.length;
           }
@@ -104,9 +111,11 @@ export function ResponseButton({
     }
     responseAudio(pcm)
       .then((data: ResponseAudioResult) => {
-        onResult({ burmeseText: data.burmeseText, audioBase64: data.audioBase64 });
-        if (playTtsEnabled && data.audioBase64) {
-          const audio = new Audio('data:audio/mp3;base64,' + data.audioBase64);
+        const burmeseText = data && typeof data.burmeseText === 'string' ? data.burmeseText : '';
+        const audioBase64 = data && data.audioBase64 != null ? data.audioBase64 : null;
+        onResult({ burmeseText, audioBase64 });
+        if (playTtsEnabled && audioBase64) {
+          const audio = new Audio('data:audio/mp3;base64,' + audioBase64);
           audio.play().catch(() => {});
         }
       })

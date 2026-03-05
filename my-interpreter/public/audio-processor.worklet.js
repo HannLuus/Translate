@@ -5,12 +5,14 @@ class CaptureProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
     this.buffer = [];
-    this.frameSize = options.processorOptions?.frameSize ?? 4096;
+    this.frameSize = (options && options.processorOptions && options.processorOptions.frameSize) || 4096;
   }
 
   process(inputs) {
-    const input = inputs[0]?.[0];
-    if (!input) return true;
+    if (!inputs || !inputs.length) return true;
+    const ch0 = inputs[0];
+    const input = ch0 && ch0[0];
+    if (!input || typeof input.length !== 'number') return true;
     for (let i = 0; i < input.length; i++) this.buffer.push(input[i]);
     while (this.buffer.length >= this.frameSize) {
       const frame = this.buffer.splice(0, this.frameSize);

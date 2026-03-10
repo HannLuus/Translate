@@ -63,8 +63,15 @@ async function doInterpret(
     body,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? 'Interpret failed');
+    const text = await res.text();
+    let msg = `Interpret failed (${res.status})`;
+    try {
+      const err = JSON.parse(text) as { error?: string };
+      if (err?.error) msg = err.error;
+    } catch {
+      if (text.trim()) msg = text.trim();
+    }
+    throw new Error(msg);
   }
   return res.json() as Promise<InterpretResult>;
 }

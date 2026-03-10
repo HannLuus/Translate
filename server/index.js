@@ -18,7 +18,7 @@ const express = require('express');
 const cors = require('cors');
 const { v2 } = require('@google-cloud/speech');
 const textToSpeech = require('@google-cloud/text-to-speech');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { VertexAI } = require('@google-cloud/vertexai');
 
 const app = express();
 app.use(cors());
@@ -28,9 +28,10 @@ const PORT = process.env.PORT || 3001;
 
 let speechClient;
 let ttsClient;
-let genAI;
+let vertexAI;
 
 const SPEECH_REGION = 'asia-southeast1'; // Singapore – lowest latency for Myanmar/Mandalay
+const VERTEX_REGION = process.env.VERTEX_AI_REGION || 'us-central1';
 
 function getSpeechClient() {
   if (!speechClient) {
@@ -46,11 +47,12 @@ function getTtsClient() {
   return ttsClient;
 }
 
-function getGenAI() {
-  if (!genAI && process.env.GEMINI_API_KEY) {
-    genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  }
-  return genAI;
+async function getVertexAI() {
+  if (vertexAI) return vertexAI;
+  const projectId = await getProjectId();
+  if (!projectId) throw new Error('Vertex AI requires GOOGLE_APPLICATION_CREDENTIALS (or GOOGLE_CLOUD_PROJECT) with project_id');
+  vertexAI = new VertexAI({ project: projectId, location: VERTEX_REGION });
+  return vertexAI;
 }
 
 async function getProjectId() {
@@ -139,16 +141,20 @@ async function transcribeWithChirp3(audioBuffer) {
 
 async function translateWithGemini(text, toEnglish = true, recentContext = null) {
   if (!text || typeof text !== 'string' || !text.trim()) return '';
-  const ai = getGenAI();
-  if (!ai) throw new Error('GEMINI_API_KEY not set');
-  const model = ai.getGenerativeModel({ model: 'gemini-2.0-flash' });
+  const ai = await getVertexAI();
   const promptBase = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
-  const prompt = buildTranslationPrompt(promptBase, text, recentContext);
-  const result = await model.generateContent(prompt);
+  const userMessage = buildTranslationPrompt(promptBase, text, recentContext);
+  const model = ai.getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    systemInstruction: { parts: [{ text: promptBase }] },
+  });
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+  });
   const resp = result.response;
   if (!resp || !resp.candidates || !resp.candidates[0]) {
-    const blockReason = resp?.candidates?.[0]?.finishReason ?? resp?.promptFeedback?.blockReason;
-    throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no text');
+    const blockReason = resp?.promptFeedback?.blockReason ?? resp?.candidates?.[0]?.finishReason;
+    throw new Error(blockReason ? `Vertex AI blocked: ${blockReason}` : 'Vertex AI returned no text');
   }
   const part = resp.candidates[0].content?.parts?.[0];
   return (part?.text || '').trim();

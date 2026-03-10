@@ -28,10 +28,10 @@ Deno.serve(async (req) => {
     const msg = err instanceof Error ? err.message : 'Response failed';
     console.error('[response]', err);
     const isQuotaOrKey =
-      /429|quota|Quota exceeded|free_tier|billing|GEMINI_API_KEY is not set/i.test(msg);
+      /429|quota|Quota exceeded|free_tier|billing|GOOGLE_APPLICATION_CREDENTIALS_JSON|VERTEX_AI_REGION|Vertex AI error/i.test(msg);
     const status = isQuotaOrKey ? 503 : 500;
     const userMessage = isQuotaOrKey
-      ? 'Translation quota or API key issue. Set GEMINI_API_KEY in Supabase (Edge Functions → Secrets) to a key with billing enabled: https://aistudio.google.com/apikey'
+      ? 'Translation quota or Vertex AI config. Ensure GOOGLE_APPLICATION_CREDENTIALS_JSON and VERTEX_AI_REGION (e.g. us-central1) are set in Edge Functions → Secrets; service account needs Vertex AI User role.'
       : msg;
     return new Response(JSON.stringify({ error: userMessage }), {
       status,

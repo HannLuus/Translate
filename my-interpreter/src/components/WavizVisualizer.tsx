@@ -22,7 +22,7 @@ export function WavizVisualizer({ stream, active }: WavizVisualizerProps) {
     const waviz = new Waviz(canvas, stream);
     wavizRef.current = waviz;
     waviz
-      .simpleBars('#4f46e5')
+      .simpleLine('#4f46e5')
       .catch(() => {});
     return () => {
       waviz.cleanup();
@@ -32,8 +32,13 @@ export function WavizVisualizer({ stream, active }: WavizVisualizerProps) {
 
   if (!active) {
     return (
-      <div className="waviz-visualizer waviz-visualizer--idle">
-        <p>Start interpretation to see audio levels.</p>
+      <div className="waviz-visualizer waviz-visualizer--idle" aria-live="polite">
+        <p>Start interpretation to see live audio levels.</p>
+        <div className="waviz-visualizer__idle-bars" aria-hidden>
+          {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+            <span key={i} className="waviz-visualizer__idle-bar" />
+          ))}
+        </div>
       </div>
     );
   }
@@ -42,8 +47,8 @@ export function WavizVisualizer({ stream, active }: WavizVisualizerProps) {
     <div className="waviz-visualizer">
       <canvas
         ref={canvasRef}
-        width={320}
-        height={80}
+        width={280}
+        height={52}
         className="waviz-visualizer__canvas"
         aria-hidden
       />

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Test Google Cloud APIs (Speech-to-Text, Text-to-Speech, optional Gemini)
+ * Test Google Cloud APIs (Speech-to-Text, Text-to-Speech, Vertex AI Gemini)
  * using the same credentials as the server. Run from server dir:
  *   node test-google-apis.js
- * Requires .env with GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON,
- * and GEMINI_API_KEY for the Gemini test.
+ * Requires .env with GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON.
+ * Optional VERTEX_AI_REGION (default us-central1) for Vertex AI test.
  */
 require('dotenv').config();
 
@@ -32,6 +32,7 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
 
 const { v2 } = require('@google-cloud/speech');
 const textToSpeech = require('@google-cloud/text-to-speech');
+const { VertexAI } = require('@google-cloud/vertexai');
 
 async function getProjectId() {
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -119,19 +120,22 @@ async function testTextToSpeech() {
   }
 }
 
-async function testGemini() {
-  if (!process.env.GEMINI_API_KEY) {
-    console.log('\n3. Gemini: SKIP (GEMINI_API_KEY not set)');
+async function testVertexAI() {
+  const projectId = await getProjectId();
+  if (!projectId) {
+    console.log('\n3. Vertex AI: SKIP (no project ID; set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CLOUD_PROJECT)');
     return;
   }
-  console.log('\n3. Testing Gemini...');
+  console.log('\n3. Testing Vertex AI (Gemini)...');
   try {
-    const { GoogleGenerativeAI } = require('@google/generative-ai');
-    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const result = await model.generateContent('Reply with exactly: OK');
+    const region = process.env.VERTEX_AI_REGION || 'us-central1';
+    const vertexAI = new VertexAI({ project: projectId, location: region });
+    const model = vertexAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const result = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: 'Reply with exactly: OK' }] }],
+    });
     const text = result.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    console.log('   OK: Gemini (reply:', text || '(empty)', ')');
+    console.log('   OK: Vertex AI Gemini (reply:', text || '(empty)', ')');
   } catch (err) {
     console.log('   FAIL:', err.message || err);
   }
@@ -141,7 +145,7 @@ async function main() {
   console.log('Google Cloud API tests (same credentials as server)');
   await testSpeechToText();
   await testTextToSpeech();
-  await testGemini();
+  await testVertexAI();
   console.log('\nDone.');
 }
 

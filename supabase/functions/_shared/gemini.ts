@@ -1,6 +1,8 @@
-import { GoogleGenerativeAI, type GenerationConfig } from 'npm:@google/generative-ai@^0.24.1';
+import { getAccessToken, getProjectId } from './googleAuth.ts';
 
-const GENERATION_CONFIG: GenerationConfig = {
+const VERTEX_MODEL = 'gemini-2.0-flash';
+
+const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
@@ -24,6 +26,12 @@ const AUDIO_INTERPRET_SYSTEM =
   '5. The speaker is giving information TO the listener. Convey the CONCEPT and INTENT, but stay strictly grounded in the audio provided.\n' +
   '6. Output ONLY raw JSON:\n' +
   '  {"burmese":"<literal transcript>","english":"<interpreted meaning>"}';
+
+const BURMESE_TO_ENGLISH_SYSTEM =
+  'You are a live interpreter. Translate the Burmese to natural, fluent English.\n\n' +
+  'Rules: Use complete, well-formed sentences. Preserve tone and connotation (formal, casual, question, etc.). ' +
+  'If the current Burmese is a fragment or mid-sentence, combine it with the recent context to produce one coherent English sentence where possible. ' +
+  'Output only the translation, no explanations or brackets.';
 
 const ENGLISH_TO_BURMESE_SYSTEM =
   'You are an experienced English-to-Burmese conference interpreter working in a live meeting. ' +
@@ -81,12 +89,74 @@ function buildUserMessage(currentText: string, recentContext?: string | null): s
   return `Recent context (prior English translation): ${recentContext.trim()}\n\nCurrent to translate: ${trimmed}`;
 }
 
-let _ai: GoogleGenerativeAI | null = null;
-function getAI(): GoogleGenerativeAI {
-  const apiKey = Deno.env.get('GEMINI_API_KEY');
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not set');
-  if (!_ai) _ai = new GoogleGenerativeAI(apiKey);
-  return _ai;
+function getVertexRegion(): string {
+  return Deno.env.get('VERTEX_AI_REGION') ?? 'us-central1';
+}
+
+/** Vertex AI generateContent request/response shapes (REST API). */
+interface VertexPart {
+  text?: string;
+  inlineData?: { mimeType: string; data: string };
+}
+
+interface VertexContent {
+  role: string;
+  parts: VertexPart[];
+}
+
+interface VertexGenerateRequest {
+  contents: VertexContent[];
+  systemInstruction?: { parts: VertexPart[] };
+  generationConfig?: Record<string, unknown>;
+}
+
+interface VertexGenerateResponse {
+  candidates?: Array<{
+    content?: { parts?: VertexPart[] };
+    finishReason?: string;
+  }>;
+  promptFeedback?: { blockReason?: string };
+}
+
+/** Call Vertex AI generateContent REST API using service account auth. */
+async function vertexGenerateContent(
+  contents: VertexContent[],
+  systemInstruction?: string | null,
+): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
+  const projectId = getProjectId();
+  const region = getVertexRegion();
+  const token = await getAccessToken();
+  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+
+  const body: VertexGenerateRequest = {
+    contents,
+    generationConfig: GENERATION_CONFIG,
+  };
+  if (systemInstruction?.trim()) {
+    body.systemInstruction = { parts: [{ text: systemInstruction.trim() }] };
+  }
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Vertex AI error ${res.status}: ${errText}`);
+  }
+
+  const data = (await res.json()) as VertexGenerateResponse;
+  const blockReason = data.promptFeedback?.blockReason;
+  const candidate = data.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+  const text = candidate?.content?.parts?.[0]?.text ?? '';
+
+  return { text: text.trim(), blockReason, finishReason };
 }
 
 /** Delays for retry backoff (rate limits in long meetings). */
@@ -94,7 +164,7 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** True if the error is a Gemini rate limit or quota error — safe to retry. */
+/** True if the error is a Gemini/Vertex rate limit or quota error — safe to retry. */
 function isRetryableError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return /429|quota|Quota exceeded|resource_exhausted|rate limit|RESOURCE_EXHAUSTED|too many requests/i.test(msg);
@@ -107,10 +177,8 @@ const RETRY_DELAYS_MS = [2000, 4000, 8000]; // 3 retries after initial attempt (
 // ---------------------------------------------------------------------------
 
 /**
- * Single-step Burmese audio → English translation via Gemini multimodal.
- * Replaces the two-step Google STT + Gemini translation pipeline so that
- * Gemini resolves ambiguous Burmese words (e.g. လေ = wind vs airplane)
- * using full audio context rather than relying on an error-prone transcript.
+ * Single-step Burmese audio → English translation via Vertex AI Gemini multimodal.
+ * Uses the same service account as Speech-to-Text (GOOGLE_APPLICATION_CREDENTIALS_JSON).
  */
 export async function transcribeAndTranslateAudio(
   audioBytes: Uint8Array,
@@ -131,13 +199,15 @@ export async function transcribeAndTranslateAudio(
       '\n---';
   }
 
-  const model = getAI().getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    systemInstruction: systemPrompt,
-    generationConfig: GENERATION_CONFIG,
-  });
-
   const textPart = 'Listen to this Burmese audio clip. Transcribe what was said, then interpret it. STAY RIGIDLY GROUNDED in the audio. DO NOT hallucinate common phrases or news reports. If a word is unclear, use phonetic brackets [like this]. DO NOT add ANY outside information.';
+  const contents: VertexContent[] = [{
+    role: 'user',
+    parts: [
+      { inlineData: { mimeType: 'audio/wav', data: audioBase64 } },
+      { text: textPart },
+    ],
+  }];
+
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 
@@ -145,35 +215,21 @@ export async function transcribeAndTranslateAudio(
     try {
       if (attempt > 0) {
         await delay(RETRY_DELAYS_MS[attempt - 1]);
-        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+        console.warn(`[vertex] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
       }
 
-      const result = await model.generateContent({
-        contents: [{
-          role: 'user',
-          parts: [
-            { inlineData: { mimeType: 'audio/wav', data: audioBase64 } },
-            { text: textPart },
-          ],
-        }],
-      });
+      const { text: raw, blockReason, finishReason } = await vertexGenerateContent(contents, systemPrompt);
 
-      const resp = result.response;
-      if (!resp?.candidates?.length) {
-        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
-        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      if (blockReason) {
+        throw new Error(`Vertex blocked: ${blockReason}`);
       }
-
-      const candidate = resp.candidates[0];
-      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
+      if (finishReason && finishReason !== 'STOP') {
+        throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
-
-      const raw = (candidate.content?.parts?.[0]?.text ?? '').trim();
       if (!raw) return { burmeseText: '', englishText: '' };
 
       try {
-        const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/,'').trim();
+        const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/, '').trim();
         const parsed = JSON.parse(json) as { burmese?: string; english?: string };
         return {
           burmeseText: (parsed.burmese ?? '').trim(),
@@ -222,13 +278,9 @@ export async function cleanTranscriptAndSummarize(
     systemPrompt += '\n\nThe transcript you receive is the final portion of a long meeting; the beginning was omitted due to length. Clean and summarize based on what you receive.';
   }
 
-  const model = getAI().getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    systemInstruction: systemPrompt,
-    generationConfig: GENERATION_CONFIG,
-  });
-
   const userMessage = `Process this meeting transcript. Clean it using the meeting context, then provide the summary and key points. Output only the JSON object.\n\nTRANSCRIPT:\n\n${toSend}`;
+  const contents: VertexContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
+
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 
@@ -236,23 +288,17 @@ export async function cleanTranscriptAndSummarize(
     try {
       if (attempt > 0) {
         await delay(RETRY_DELAYS_MS[attempt - 1]);
-        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+        console.warn(`[vertex] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
       }
 
-      const result = await model.generateContent(userMessage);
-      const resp = result.response;
+      const { text: raw, blockReason, finishReason } = await vertexGenerateContent(contents, systemPrompt);
 
-      if (!resp?.candidates?.length) {
-        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
-        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      if (blockReason) {
+        throw new Error(`Vertex blocked: ${blockReason}`);
       }
-
-      const candidate = resp.candidates[0];
-      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
+      if (finishReason && finishReason !== 'STOP') {
+        throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
-
-      const raw = (candidate.content?.parts?.[0]?.text ?? '').trim();
       if (!raw) {
         const fallbackCleaned = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
         return { cleanedTranscript: fallbackCleaned, summary: 'Summary unavailable.', keyPoints: [] };
@@ -291,13 +337,9 @@ export async function translateWithGemini(
 ): Promise<string> {
   if (!text?.trim()) return '';
 
-  const model = getAI().getGenerativeModel({
-    model: 'gemini-2.0-flash',
-    systemInstruction: ENGLISH_TO_BURMESE_SYSTEM,
-    generationConfig: GENERATION_CONFIG,
-  });
-
   const userMessage = buildUserMessage(text, toEnglish ? recentContext : null);
+  const contents: VertexContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
+
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
   let lastError: unknown;
 
@@ -305,24 +347,20 @@ export async function translateWithGemini(
     try {
       if (attempt > 0) {
         await delay(RETRY_DELAYS_MS[attempt - 1]);
-        console.warn(`[gemini] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
+        console.warn(`[vertex] Retry ${attempt}/${maxAttempts - 1} after rate limit`);
       }
 
-      const result = await model.generateContent(userMessage);
-      const resp = result.response;
+      const systemInstruction = toEnglish ? BURMESE_TO_ENGLISH_SYSTEM : ENGLISH_TO_BURMESE_SYSTEM;
+      const { text: out, blockReason, finishReason } = await vertexGenerateContent(contents, systemInstruction);
 
-      if (!resp?.candidates?.length) {
-        const blockReason = (resp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
-        throw new Error(blockReason ? `Gemini blocked: ${blockReason}` : 'Gemini returned no candidates');
+      if (blockReason) {
+        throw new Error(`Vertex blocked: ${blockReason}`);
+      }
+      if (finishReason && finishReason !== 'STOP') {
+        throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
 
-      const candidate = resp.candidates[0];
-      if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-        throw new Error(`Gemini stopped with reason: ${candidate.finishReason}`);
-      }
-
-      const part = candidate.content?.parts?.[0];
-      return (part?.text ?? '').trim();
+      return out;
     } catch (e) {
       lastError = e;
       if (attempt === maxAttempts - 1 || !isRetryableError(e)) throw e;

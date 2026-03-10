@@ -9,7 +9,7 @@ Real-time Burmese-to-English interpreter with three capture modes: **Desktop (Ta
 ```bash
 cd server
 cp .env.example .env
-# Edit .env: set GOOGLE_APPLICATION_CREDENTIALS and GEMINI_API_KEY
+# Edit .env: set GOOGLE_APPLICATION_CREDENTIALS (Vertex AI uses same credentials; optional VERTEX_AI_REGION)
 npm start
 ```
 
@@ -46,7 +46,7 @@ Backend URL and anon key are defined in `my-interpreter/src/api.ts`; override wi
 
 ## Environment
 
-- **Supabase Edge Functions:** Set secrets in Supabase Dashboard → Project Settings → Edge Functions → Secrets: `GEMINI_API_KEY`, `GOOGLE_APPLICATION_CREDENTIALS_JSON`.
+- **Supabase Edge Functions:** Set secrets: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `VERTEX_AI_REGION` (e.g. us-central1). Service account needs Vertex AI User role for Gemini.
 - **Local server (optional):** `server/.env` — see `server/.env.example`. Used only for running the Node backend locally (`cd server && npm start`).
 - **my-interpreter:** Backend URL is in `my-interpreter/src/api.ts` (`SUPABASE_PROJECT_URL` / `API_BASE`). Override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel.
 

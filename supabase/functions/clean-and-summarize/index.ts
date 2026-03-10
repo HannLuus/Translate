@@ -43,7 +43,7 @@ Deno.serve(async (req) => {
       /429|quota|Quota exceeded|free_tier|billing|GOOGLE_APPLICATION_CREDENTIALS_JSON|VERTEX_AI_REGION|Vertex AI error/i.test(msg);
     const status = isQuotaOrKey ? 503 : 500;
     const userMessage = isQuotaOrKey
-      ? 'Translation quota or Vertex AI config. Ensure GOOGLE_APPLICATION_CREDENTIALS_JSON and VERTEX_AI_REGION (e.g. us-central1) are set in Edge Functions → Secrets; service account needs Vertex AI User role.'
+      ? `Vertex AI / config issue. Check Edge Functions → Secrets (VERTEX_AI_API_KEY, VERTEX_AI_REGION, or GOOGLE_APPLICATION_CREDENTIALS_JSON). Details: ${msg}`
       : msg;
     return new Response(JSON.stringify({ error: userMessage }), {
       status,

@@ -6,8 +6,8 @@ const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
-  /** Allow long outputs for clean-and-summarize (full transcript + summary). Default is too low for long meetings. */
-  maxOutputTokens: 65536,
+  /** Max allowed by Vertex for gemini-2.0-flash is 8192. Use it for long clean-and-summarize outputs. */
+  maxOutputTokens: 8192,
 };
 
 // Minimum 0.5 s of 16kHz 16-bit mono PCM before sending to Gemini
@@ -95,6 +95,13 @@ function getVertexRegion(): string {
   return Deno.env.get('VERTEX_AI_REGION') ?? 'us-central1';
 }
 
+/** When using VERTEX_AI_API_KEY we need project ID from env or service account. */
+function getVertexProjectId(): string {
+  const fromEnv = Deno.env.get('VERTEX_AI_PROJECT_ID') ?? Deno.env.get('GOOGLE_CLOUD_PROJECT');
+  if (fromEnv?.trim()) return fromEnv.trim();
+  return getProjectId();
+}
+
 /** Vertex AI generateContent request/response shapes (REST API). */
 interface VertexPart {
   text?: string;
@@ -120,14 +127,15 @@ interface VertexGenerateResponse {
   promptFeedback?: { blockReason?: string };
 }
 
-/** Call Vertex AI generateContent REST API using service account auth. */
+/** Call Vertex AI generateContent REST API. Uses VERTEX_AI_API_KEY if set, else service account Bearer token. */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
 ): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
-  const projectId = getProjectId();
   const region = getVertexRegion();
-  const token = await getAccessToken();
+  const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
+  const projectId = getVertexProjectId();
+
   const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 
   const body: VertexGenerateRequest = {
@@ -138,12 +146,16 @@ async function vertexGenerateContent(
     body.systemInstruction = { parts: [{ text: systemInstruction.trim() }] };
   }
 
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (apiKey) {
+    headers['x-goog-api-key'] = apiKey;
+  } else {
+    headers['Authorization'] = `Bearer ${await getAccessToken()}`;
+  }
+
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(body),
   });
 

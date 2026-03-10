@@ -121,14 +121,33 @@ async function testTextToSpeech() {
 }
 
 async function testVertexAI() {
-  const projectId = await getProjectId();
-  if (!projectId) {
-    console.log('\n3. Vertex AI: SKIP (no project ID; set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_CLOUD_PROJECT)');
+  const apiKey = process.env.VERTEX_AI_API_KEY?.trim();
+  const projectId = process.env.VERTEX_AI_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || (await getProjectId());
+  if (!apiKey && !projectId) {
+    console.log('\n3. Vertex AI: SKIP (set VERTEX_AI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS/GOOGLE_CLOUD_PROJECT)');
     return;
   }
   console.log('\n3. Testing Vertex AI (Gemini)...');
   try {
     const region = process.env.VERTEX_AI_REGION || 'us-central1';
+    if (apiKey) {
+      const pid = projectId || process.env.VERTEX_AI_PROJECT_ID;
+      if (!pid) throw new Error('Set VERTEX_AI_PROJECT_ID or GOOGLE_CLOUD_PROJECT when using VERTEX_AI_API_KEY');
+      const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${pid}/locations/${region}/publishers/google/models/gemini-2.0-flash:generateContent`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'Reply with exactly: OK' }] }],
+          generationConfig: { temperature: 0.1 },
+        }),
+      });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+      console.log('   OK: Vertex AI Gemini (API key) (reply:', text || '(empty)', ')');
+      return;
+    }
     const vertexAI = new VertexAI({ project: projectId, location: region });
     const model = vertexAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
     const result = await model.generateContent({

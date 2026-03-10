@@ -141,9 +141,31 @@ async function transcribeWithChirp3(audioBuffer) {
 
 async function translateWithGemini(text, toEnglish = true, recentContext = null) {
   if (!text || typeof text !== 'string' || !text.trim()) return '';
-  const ai = await getVertexAI();
   const promptBase = toEnglish ? BURMESE_TO_ENGLISH_PROMPT : ENGLISH_TO_BURMESE_PROMPT;
   const userMessage = buildTranslationPrompt(promptBase, text, recentContext);
+
+  const apiKey = process.env.VERTEX_AI_API_KEY?.trim();
+  if (apiKey) {
+    const projectId = process.env.VERTEX_AI_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT || (await getProjectId());
+    if (!projectId) throw new Error('Set VERTEX_AI_PROJECT_ID or GOOGLE_CLOUD_PROJECT when using VERTEX_AI_API_KEY');
+    const region = VERTEX_REGION;
+    const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/gemini-2.0-flash:generateContent`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+        systemInstruction: { parts: [{ text: promptBase }] },
+        generationConfig: { temperature: 0.1, topP: 0.95 },
+      }),
+    });
+    if (!res.ok) throw new Error(`Vertex AI error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    const part = data.candidates?.[0]?.content?.parts?.[0];
+    return (part?.text || '').trim();
+  }
+
+  const ai = await getVertexAI();
   const model = ai.getGenerativeModel({
     model: 'gemini-2.0-flash',
     systemInstruction: { parts: [{ text: promptBase }] },

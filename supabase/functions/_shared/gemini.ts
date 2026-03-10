@@ -6,6 +6,8 @@ const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
+  /** Allow long outputs for clean-and-summarize (full transcript + summary). Default is too low for long meetings. */
+  maxOutputTokens: 65536,
 };
 
 // Minimum 0.5 s of 16kHz 16-bit mono PCM before sending to Gemini

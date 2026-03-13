@@ -1,6 +1,8 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
 
 const VERTEX_MODEL = 'gemini-2.0-flash';
+// Vertex AI Express endpoint (API key only) requires a versioned model name
+const VERTEX_MODEL_VERSIONED = 'gemini-2.0-flash-001';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,
@@ -95,18 +97,6 @@ function getVertexRegion(): string {
   return Deno.env.get('VERTEX_AI_REGION') ?? 'us-central1';
 }
 
-/** When using VERTEX_AI_API_KEY we need project ID from env or service account. */
-function getVertexProjectId(): string {
-  const fromEnv = Deno.env.get('VERTEX_AI_PROJECT_ID') ?? Deno.env.get('GOOGLE_CLOUD_PROJECT');
-  if (fromEnv?.trim()) return fromEnv.trim();
-  const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
-  if (apiKey) {
-    throw new Error(
-      'VERTEX_AI_PROJECT_ID or GOOGLE_CLOUD_PROJECT must be set when using VERTEX_AI_API_KEY (no service account to derive project from)',
-    );
-  }
-  return getProjectId();
-}
 
 /** Vertex AI generateContent request/response shapes (REST API). */
 interface VertexPart {
@@ -133,16 +123,38 @@ interface VertexGenerateResponse {
   promptFeedback?: { blockReason?: string };
 }
 
-/** Call Vertex AI generateContent REST API. Uses VERTEX_AI_API_KEY if set, else service account Bearer token. */
+/**
+ * Call Vertex AI generateContent REST API.
+ * Auth priority:
+ *   1. GOOGLE_APPLICATION_CREDENTIALS_JSON (service account) → regional aiplatform endpoint, full GCP quotas.
+ *   2. VERTEX_AI_API_KEY only → Vertex AI Express global endpoint (no project ID required).
+ * Service account is preferred because it also covers TTS and gives full Vertex AI quotas.
+ */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
 ): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
-  const region = getVertexRegion();
+  const credJson = Deno.env.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')?.trim();
   const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
-  const projectId = getVertexProjectId();
 
-  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+  let url: string;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+
+  if (credJson) {
+    // Service account path — same endpoint that was working before
+    const region = getVertexRegion();
+    const projectId = getProjectId();
+    url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+    headers['Authorization'] = `Bearer ${await getAccessToken()}`;
+  } else if (apiKey) {
+    // API key only — use Vertex AI Express endpoint (no project ID in URL)
+    url = `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${VERTEX_MODEL_VERSIONED}:generateContent`;
+    headers['x-goog-api-key'] = apiKey;
+  } else {
+    throw new Error(
+      'No Vertex AI credentials. Set GOOGLE_APPLICATION_CREDENTIALS_JSON (recommended — also needed for TTS) or VERTEX_AI_API_KEY in Edge Function secrets.',
+    );
+  }
 
   const body: VertexGenerateRequest = {
     contents,
@@ -150,13 +162,6 @@ async function vertexGenerateContent(
   };
   if (systemInstruction?.trim()) {
     body.systemInstruction = { parts: [{ text: systemInstruction.trim() }] };
-  }
-
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (apiKey) {
-    headers['x-goog-api-key'] = apiKey;
-  } else {
-    headers['Authorization'] = `Bearer ${await getAccessToken()}`;
   }
 
   const res = await fetch(url, {

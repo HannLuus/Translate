@@ -1,8 +1,6 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
 
 const VERTEX_MODEL = 'gemini-2.0-flash';
-// Vertex AI Express endpoint (API key only) requires a versioned model name
-const VERTEX_MODEL_VERSIONED = 'gemini-2.0-flash-001';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,
@@ -124,37 +122,23 @@ interface VertexGenerateResponse {
 }
 
 /**
- * Call Vertex AI generateContent REST API.
- * Auth priority:
- *   1. VERTEX_AI_API_KEY → Vertex AI Express global endpoint (correct URL for GCP API keys, no project ID required).
- *   2. GOOGLE_APPLICATION_CREDENTIALS_JSON (service account) → regional aiplatform endpoint.
- *      Note: service account is still required for TTS/STT regardless of this setting.
+ * Call Vertex AI generateContent REST API using the service account credentials.
+ * GOOGLE_APPLICATION_CREDENTIALS_JSON is required (same credentials used by TTS/STT).
+ * The service account must have the "Vertex AI User" role.
  */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
 ): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
-  const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
-  const credJson = Deno.env.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')?.trim();
+  const region = getVertexRegion();
+  const projectId = getProjectId();
 
-  let url: string;
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
 
-  if (apiKey) {
-    // Vertex AI Express — the correct endpoint for GCP API keys; no project ID in URL
-    url = `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${VERTEX_MODEL_VERSIONED}:generateContent`;
-    headers['x-goog-api-key'] = apiKey;
-  } else if (credJson) {
-    // Service account fallback — regional endpoint
-    const region = getVertexRegion();
-    const projectId = getProjectId();
-    url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
-    headers['Authorization'] = `Bearer ${await getAccessToken()}`;
-  } else {
-    throw new Error(
-      'No Vertex AI credentials. Set VERTEX_AI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS_JSON in Edge Function secrets.',
-    );
-  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${await getAccessToken()}`,
+  };
 
   const body: VertexGenerateRequest = {
     contents,

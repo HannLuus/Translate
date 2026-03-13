@@ -1,6 +1,6 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
 
-const VERTEX_MODEL = 'gemini-2.0-flash';
+const VERTEX_MODEL = 'gemini-2.0-flash-001';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,

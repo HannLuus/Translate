@@ -126,33 +126,33 @@ interface VertexGenerateResponse {
 /**
  * Call Vertex AI generateContent REST API.
  * Auth priority:
- *   1. GOOGLE_APPLICATION_CREDENTIALS_JSON (service account) → regional aiplatform endpoint, full GCP quotas.
- *   2. VERTEX_AI_API_KEY only → Vertex AI Express global endpoint (no project ID required).
- * Service account is preferred because it also covers TTS and gives full Vertex AI quotas.
+ *   1. VERTEX_AI_API_KEY → Vertex AI Express global endpoint (correct URL for GCP API keys, no project ID required).
+ *   2. GOOGLE_APPLICATION_CREDENTIALS_JSON (service account) → regional aiplatform endpoint.
+ *      Note: service account is still required for TTS/STT regardless of this setting.
  */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
 ): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
-  const credJson = Deno.env.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')?.trim();
   const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
+  const credJson = Deno.env.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')?.trim();
 
   let url: string;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
-  if (credJson) {
-    // Service account path — same endpoint that was working before
+  if (apiKey) {
+    // Vertex AI Express — the correct endpoint for GCP API keys; no project ID in URL
+    url = `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${VERTEX_MODEL_VERSIONED}:generateContent`;
+    headers['x-goog-api-key'] = apiKey;
+  } else if (credJson) {
+    // Service account fallback — regional endpoint
     const region = getVertexRegion();
     const projectId = getProjectId();
     url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
     headers['Authorization'] = `Bearer ${await getAccessToken()}`;
-  } else if (apiKey) {
-    // API key only — use Vertex AI Express endpoint (no project ID in URL)
-    url = `https://aiplatform.googleapis.com/v1beta1/publishers/google/models/${VERTEX_MODEL_VERSIONED}:generateContent`;
-    headers['x-goog-api-key'] = apiKey;
   } else {
     throw new Error(
-      'No Vertex AI credentials. Set GOOGLE_APPLICATION_CREDENTIALS_JSON (recommended — also needed for TTS) or VERTEX_AI_API_KEY in Edge Function secrets.',
+      'No Vertex AI credentials. Set VERTEX_AI_API_KEY or GOOGLE_APPLICATION_CREDENTIALS_JSON in Edge Function secrets.',
     );
   }
 

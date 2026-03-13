@@ -1,12 +1,18 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
 
+/**
+ * Model used with the Gemini Developer API (generativelanguage.googleapis.com).
+ * gemini-2.5-flash supports audio, text, and all features needed here.
+ */
+const GEMINI_DEV_MODEL = 'gemini-2.5-flash';
+
+/** Model used with the Vertex AI regional endpoint (fallback if only service account is set). */
 const VERTEX_MODEL = 'gemini-2.0-flash-001';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
-  /** Max allowed by Vertex for gemini-2.0-flash is 8192. Use it for long clean-and-summarize outputs. */
   maxOutputTokens: 8192,
 };
 
@@ -122,23 +128,33 @@ interface VertexGenerateResponse {
 }
 
 /**
- * Call Vertex AI generateContent REST API using the service account credentials.
- * GOOGLE_APPLICATION_CREDENTIALS_JSON is required (same credentials used by TTS/STT).
- * The service account must have the "Vertex AI User" role.
+ * Call Gemini generateContent.
+ *
+ * Priority:
+ *   1. VERTEX_AI_API_KEY → Gemini Developer API (generativelanguage.googleapis.com)
+ *      Uses gemini-2.5-flash; no project ID needed; API key in query param.
+ *   2. GOOGLE_APPLICATION_CREDENTIALS_JSON → Vertex AI regional endpoint
+ *      Uses gemini-2.0-flash-001 with OAuth2 bearer token.
+ *
+ * Both APIs share the same request/response body schema.
  */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
 ): Promise<{ text: string; blockReason?: string; finishReason?: string }> {
-  const region = getVertexRegion();
-  const projectId = getProjectId();
+  const apiKey = Deno.env.get('VERTEX_AI_API_KEY');
 
-  const url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+  let url: string;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${await getAccessToken()}`,
-  };
+  if (apiKey) {
+    url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_DEV_MODEL}:generateContent?key=${apiKey}`;
+  } else {
+    const region = getVertexRegion();
+    const projectId = getProjectId();
+    url = `https://${region}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${region}/publishers/google/models/${VERTEX_MODEL}:generateContent`;
+    headers['Authorization'] = `Bearer ${await getAccessToken()}`;
+  }
 
   const body: VertexGenerateRequest = {
     contents,
@@ -156,7 +172,8 @@ async function vertexGenerateContent(
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Vertex AI error ${res.status}: ${errText}`);
+    const apiLabel = apiKey ? 'Gemini API' : 'Vertex AI';
+    throw new Error(`${apiLabel} error ${res.status}: ${errText}`);
   }
 
   const data = (await res.json()) as VertexGenerateResponse;

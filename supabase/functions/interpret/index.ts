@@ -36,7 +36,13 @@ Deno.serve(async (req) => {
       );
     }
 
-    const audioBase64 = await synthesizeSpeech(englishText, 'en-US');
+    let audioBase64: string | null = null;
+    try {
+      audioBase64 = await synthesizeSpeech(englishText, 'en-US');
+    } catch (ttsErr) {
+      console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
+      // Still return translation; client can show text without playback
+    }
 
     return new Response(
       JSON.stringify({ burmeseText, englishText, audioBase64 }),
@@ -47,10 +53,10 @@ Deno.serve(async (req) => {
     console.error('[interpret]', err);
 
     const isQuotaOrKey =
-      /429|quota|Quota exceeded|free_tier|billing|GOOGLE_APPLICATION_CREDENTIALS_JSON|VERTEX_AI_REGION|Vertex AI error/i.test(msg);
+      /429|quota|Quota exceeded|free_tier|billing|GOOGLE_APPLICATION_CREDENTIALS_JSON|VERTEX_AI_REGION|VERTEX_AI_API_KEY|VERTEX_AI_PROJECT_ID|Vertex AI error|TTS error/i.test(msg);
     const status = isQuotaOrKey ? 503 : 500;
     const userMessage = isQuotaOrKey
-      ? 'Translation quota or Vertex AI config. Ensure GOOGLE_APPLICATION_CREDENTIALS_JSON and VERTEX_AI_REGION (e.g. us-central1) are set in Edge Functions → Secrets; service account needs Vertex AI User role.'
+      ? `Vertex AI / config issue. Check Edge Functions → Secrets (VERTEX_AI_API_KEY, VERTEX_AI_PROJECT_ID, VERTEX_AI_REGION, or GOOGLE_APPLICATION_CREDENTIALS_JSON for TTS). Details: ${msg}`
       : msg;
 
     return new Response(JSON.stringify({ error: userMessage }), {

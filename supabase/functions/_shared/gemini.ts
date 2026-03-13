@@ -99,6 +99,12 @@ function getVertexRegion(): string {
 function getVertexProjectId(): string {
   const fromEnv = Deno.env.get('VERTEX_AI_PROJECT_ID') ?? Deno.env.get('GOOGLE_CLOUD_PROJECT');
   if (fromEnv?.trim()) return fromEnv.trim();
+  const apiKey = Deno.env.get('VERTEX_AI_API_KEY')?.trim();
+  if (apiKey) {
+    throw new Error(
+      'VERTEX_AI_PROJECT_ID or GOOGLE_CLOUD_PROJECT must be set when using VERTEX_AI_API_KEY (no service account to derive project from)',
+    );
+  }
   return getProjectId();
 }
 

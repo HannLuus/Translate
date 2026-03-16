@@ -13,7 +13,8 @@ const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
-  maxOutputTokens: 8192,
+  /** Raised from 8192 to reduce truncation (MAX_TOKENS) in interpret/translate. */
+  maxOutputTokens: 16384,
 };
 
 // Minimum 0.5 s of 16kHz 16-bit mono PCM before sending to Gemini

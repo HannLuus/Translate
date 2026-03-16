@@ -249,7 +249,9 @@ export async function transcribeAndTranslateAudio(
       if (blockReason) {
         throw new Error(`Vertex blocked: ${blockReason}`);
       }
-      if (finishReason && finishReason !== 'STOP') {
+      if (finishReason === 'MAX_TOKENS' && raw) {
+        console.warn('[interpret] Response truncated (MAX_TOKENS); returning partial result');
+      } else if (finishReason && finishReason !== 'STOP') {
         throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
       if (!raw) return { burmeseText: '', englishText: '' };
@@ -322,7 +324,10 @@ export async function cleanTranscriptAndSummarize(
       if (blockReason) {
         throw new Error(`Vertex blocked: ${blockReason}`);
       }
-      if (finishReason && finishReason !== 'STOP') {
+      // When output hits token limit, still use whatever we got instead of failing the whole request
+      if (finishReason === 'MAX_TOKENS' && raw) {
+        console.warn('[clean-and-summarize] Response truncated (MAX_TOKENS); returning partial result');
+      } else if (finishReason && finishReason !== 'STOP') {
         throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
       if (!raw) {
@@ -337,14 +342,21 @@ export async function cleanTranscriptAndSummarize(
         if (truncated) {
           cleaned = '[Earlier part of the meeting was omitted due to length.]\n\n' + cleaned;
         }
+        const summary =
+          typeof parsed.summary === 'string'
+            ? parsed.summary.trim()
+            : finishReason === 'MAX_TOKENS'
+              ? 'Summary may be incomplete (output was truncated).'
+              : 'Summary unavailable.';
         return {
           cleanedTranscript: cleaned,
-          summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : 'Summary unavailable.',
+          summary,
           keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.filter((p): p is string => typeof p === 'string').slice(0, 10) : [],
         };
       } catch {
         const fallback = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
-        return { cleanedTranscript: fallback, summary: 'Summary unavailable.', keyPoints: [] };
+        const summary = finishReason === 'MAX_TOKENS' ? 'Summary unavailable (response was truncated).' : 'Summary unavailable.';
+        return { cleanedTranscript: fallback, summary, keyPoints: [] };
       }
     } catch (e) {
       lastError = e;
@@ -382,11 +394,13 @@ export async function translateWithGemini(
       if (blockReason) {
         throw new Error(`Vertex blocked: ${blockReason}`);
       }
-      if (finishReason && finishReason !== 'STOP') {
+      if (finishReason === 'MAX_TOKENS' && out) {
+        console.warn('[translate] Response truncated (MAX_TOKENS); returning partial translation');
+      } else if (finishReason && finishReason !== 'STOP') {
         throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
 
-      return out;
+      return out ?? '';
     } catch (e) {
       lastError = e;
       if (attempt === maxAttempts - 1 || !isRetryableError(e)) throw e;

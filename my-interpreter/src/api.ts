@@ -4,7 +4,7 @@ import type { CleanSummarizeResult, InterpretResult, ResponseResult } from './ty
  * Supabase Edge Functions base URL.
  * In dev we use a relative path so Vite proxies to Supabase (avoids CORS). In production use full URL.
  */
-const SUPABASE_PROJECT_URL = import.meta.env?.VITE_SUPABASE_URL?.replace(/\/+$/, '') || 'https://hbeixuedkdugfrpwpdph.supabase.co';
+const SUPABASE_PROJECT_URL = import.meta.env?.VITE_SUPABASE_URL?.replace(/\/+$/, '') || 'https://translate.lucas-dev-server.tech';
 const API_BASE = import.meta.env.DEV ? '/functions/v1' : `${SUPABASE_PROJECT_URL}/functions/v1`;
 
 /**
@@ -22,6 +22,47 @@ function baseHeaders(extra?: Record<string, string>): Record<string, string> {
   };
 }
 
+const FETCH_TIMEOUT_MS = {
+  default: 60_000,
+  interpret: 90_000,
+} as const;
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (e) {
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function formatApiErrorMessage(status: number, raw: string, fallback: string): string {
+  let msg = fallback;
+  try {
+    const err = JSON.parse(raw) as { error?: string };
+    if (err?.error) msg = err.error;
+  } catch {
+    if (raw.trim()) msg = raw.trim();
+  }
+  if (status === 503 || /VERTEX_AI|GOOGLE_APPLICATION|quota|billing/i.test(msg)) {
+    return `AI backend unavailable (${status}): ${msg}`;
+  }
+  if (status >= 500) {
+    return `Server error (${status}): ${msg}`;
+  }
+  return msg;
+}
+
 export function getApiBase(): string {
   return API_BASE;
 }
@@ -29,7 +70,11 @@ export function getApiBase(): string {
 /** GET /functions/v1/health – verify backend is reachable */
 export async function healthCheck(): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${API_BASE}/health`, { headers: baseHeaders() });
+    const res = await fetchWithTimeout(
+      `${API_BASE}/health`,
+      { headers: baseHeaders() },
+      15_000,
+    );
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const data = (await res.json()) as { ok?: boolean };
     return data?.ok ? { ok: true } : { ok: false, error: 'Invalid health response' };
@@ -57,21 +102,14 @@ async function doInterpret(
   body: ArrayBuffer,
   headers: Record<string, string>,
 ): Promise<InterpretResult> {
-  const res = await fetch(`${API_BASE}/interpret`, {
-    method: 'POST',
-    headers,
-    body,
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/interpret`,
+    { method: 'POST', headers, body },
+    FETCH_TIMEOUT_MS.interpret,
+  );
   if (!res.ok) {
     const text = await res.text();
-    let msg = `Interpret failed (${res.status})`;
-    try {
-      const err = JSON.parse(text) as { error?: string };
-      if (err?.error) msg = err.error;
-    } catch {
-      if (text.trim()) msg = text.trim();
-    }
-    throw new Error(msg);
+    throw new Error(formatApiErrorMessage(res.status, text, `Interpret failed (${res.status})`));
   }
   return res.json() as Promise<InterpretResult>;
 }
@@ -111,14 +149,18 @@ export async function interpretAudio(
 }
 
 export async function responseTranslate(englishText: string): Promise<ResponseResult> {
-  const res = await fetch(`${API_BASE}/response`, {
-    method: 'POST',
-    headers: baseHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ text: englishText }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/response`,
+    {
+      method: 'POST',
+      headers: baseHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ text: englishText }),
+    },
+    FETCH_TIMEOUT_MS.default,
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? 'Response failed');
+    const text = await res.text();
+    throw new Error(formatApiErrorMessage(res.status, text, 'Response failed'));
   }
   return res.json() as Promise<ResponseResult>;
 }
@@ -128,14 +170,18 @@ export async function cleanAndSummarize(
   transcript: string,
   meetingContext?: string | null,
 ): Promise<CleanSummarizeResult> {
-  const res = await fetch(`${API_BASE}/clean-and-summarize`, {
-    method: 'POST',
-    headers: baseHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ transcript, meetingContext: meetingContext ?? null }),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/clean-and-summarize`,
+    {
+      method: 'POST',
+      headers: baseHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ transcript, meetingContext: meetingContext ?? null }),
+    },
+    FETCH_TIMEOUT_MS.default,
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? 'Clean & summarize failed');
+    const text = await res.text();
+    throw new Error(formatApiErrorMessage(res.status, text, 'Clean & summarize failed'));
   }
   return res.json() as Promise<CleanSummarizeResult>;
 }
@@ -147,14 +193,18 @@ export interface ResponseAudioResult {
 }
 
 export async function responseAudio(pcm16khz: ArrayBuffer): Promise<ResponseAudioResult> {
-  const res = await fetch(`${API_BASE}/response-audio`, {
-    method: 'POST',
-    headers: baseHeaders({ 'Content-Type': 'application/octet-stream' }),
-    body: pcm16khz.slice(0),
-  });
+  const res = await fetchWithTimeout(
+    `${API_BASE}/response-audio`,
+    {
+      method: 'POST',
+      headers: baseHeaders({ 'Content-Type': 'application/octet-stream' }),
+      body: pcm16khz.slice(0),
+    },
+    FETCH_TIMEOUT_MS.default,
+  );
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error((err as { error?: string }).error ?? 'Response audio failed');
+    const text = await res.text();
+    throw new Error(formatApiErrorMessage(res.status, text, 'Response audio failed'));
   }
   return res.json() as Promise<ResponseAudioResult>;
 }

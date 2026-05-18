@@ -930,6 +930,11 @@
   cursor: not-allowed;
 }
 
+.response-btn--sending {
+  opacity: 0.85;
+  cursor: wait;
+}
+
 .response-btn--recording {
   background: #dc2626;
   animation: pulse 1.5s ease-in-out infinite;

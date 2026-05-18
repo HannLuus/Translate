@@ -3,9 +3,9 @@ import type { CaptureMode } from './types';
 const DESKTOP_NO_AUDIO_MESSAGE =
   'No audio in shared tab. Stop and start again: when the browser asks what to share, choose the Teams tab and check "Share tab audio" (or "Share system audio") so the app can hear the meeting.';
 
+export const SAMPLE_RATE_TARGET = 16000;
+
 const SAMPLE_RATE_CAPTURE = 48000;
-const SAMPLE_RATE_TARGET = 16000;
-const DOWN_RATIO = SAMPLE_RATE_CAPTURE / SAMPLE_RATE_TARGET; // 3
 
 // Worklet sends ~85ms frames (4096 samples at 48kHz).
 const FRAME_SAMPLES = 4096;
@@ -29,7 +29,7 @@ const MIN_SPEECH_FRAMES   = Math.ceil(MIN_SPEECH_MS / FRAME_MS);  //  ~18 frames
 // Audio helpers
 // ---------------------------------------------------------------------------
 
-function floatTo16BitPcm(float32: Float32Array): Int16Array {
+export function floatTo16BitPcm(float32: Float32Array): Int16Array {
   const int16 = new Int16Array(float32.length);
   for (let i = 0; i < float32.length; i++) {
     const s = Math.max(-1, Math.min(1, float32[i]));
@@ -38,18 +38,27 @@ function floatTo16BitPcm(float32: Float32Array): Int16Array {
   return int16;
 }
 
-function downsampleTo16khz(int16At48k: Int16Array): Int16Array {
-  const outLen = Math.floor(int16At48k.length / DOWN_RATIO);
+/** Downsample 16-bit PCM to 16 kHz mono (required by edge functions / Speech API). */
+export function downsampleTo16khz(int16AtSrcRate: Int16Array, srcSampleRate: number): Int16Array {
+  if (srcSampleRate <= SAMPLE_RATE_TARGET) {
+    return int16AtSrcRate;
+  }
+  const ratio = srcSampleRate / SAMPLE_RATE_TARGET;
+  const outLen = Math.floor(int16AtSrcRate.length / ratio);
   const out = new Int16Array(outLen);
   for (let i = 0; i < outLen; i++) {
-    const srcIdx = i * DOWN_RATIO;
+    const srcIdx = i * ratio;
     const idx = Math.floor(srcIdx);
     const frac = srcIdx - idx;
-    const a = int16At48k[idx] ?? 0;
-    const b = int16At48k[Math.min(idx + 1, int16At48k.length - 1)] ?? 0;
+    const a = int16AtSrcRate[idx] ?? 0;
+    const b = int16AtSrcRate[Math.min(idx + 1, int16AtSrcRate.length - 1)] ?? 0;
     out[i] = Math.round(a + frac * (b - a));
   }
   return out;
+}
+
+function downsampleFrom48k(int16At48k: Int16Array): Int16Array {
+  return downsampleTo16khz(int16At48k, SAMPLE_RATE_CAPTURE);
 }
 
 function rmsEnergy(int16: Int16Array): number {
@@ -151,7 +160,7 @@ export async function captureAudioChunks(
   node.port.onmessage = (e: MessageEvent<{ frame: Float32Array }>) => {
     if (stopped) return;
 
-    const int16_16k = downsampleTo16khz(floatTo16BitPcm(e.data.frame));
+    const int16_16k = downsampleFrom48k(floatTo16BitPcm(e.data.frame));
     const silent = rmsEnergy(int16_16k) < SILENCE_RMS;
 
     if (state === 'idle') {

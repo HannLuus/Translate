@@ -18,3 +18,5 @@ keys/
 # OS and editor
 .DS_Store
 *.local
+.vercel
+.env*.local

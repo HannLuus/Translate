@@ -30,7 +30,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
       '/functions/v1': {
-        target: 'https://hbeixuedkdugfrpwpdph.supabase.co',
+        target: 'https://translate.lucas-dev-server.tech',
         changeOrigin: true,
       },
     },

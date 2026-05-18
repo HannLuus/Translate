@@ -128,6 +128,8 @@ function App() {
   const [cleanSummarizeResult, setCleanSummarizeResult] = useState<CleanSummarizeResult | null>(null);
   const [cleanSummarizeError, setCleanSummarizeError] = useState<string | null>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
+  const interpretQueueRef = useRef<ArrayBuffer[]>([]);
+  const interpretDrainingRef = useRef(false);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   /** Last 2–3 translation segments for continuity (sent to backend). */
   const recentContextRef = useRef<string>('');
@@ -216,46 +218,58 @@ function App() {
       setInterpretStatus('listening');
       await requestWakeLock();
 
-        const stop = await captureAudioChunks(stream, async (pcm) => {
-          try {
-            setInterpretStatus('processing');
-            const combinedContext = useGlossaryAndBriefing
-              ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
-              : '';
-            const result = await interpretAudio(pcm, combinedContext || undefined);
-            const englishLine = result.englishText ?? '';
-            if (englishLine) {
-              setTranslationSegments((prev) => {
-                const lastText = prev[prev.length - 1]?.text ?? '';
-                if (isDuplicate(englishLine, lastText)) return prev; // too similar to previous — skip
-                const ctx = recentContextRef.current;
-                recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
-                  .split('\n')
-                  .filter(Boolean)
-                  .slice(-2)
-                  .join('\n');
-                return [
-                  ...prev,
-                  {
-                    id: ++segmentIdRef.current,
-                    text: englishLine,
-                    shownAt: Date.now(),
-                    burmeseText: result.burmeseText?.trim() || undefined,
-                  },
-                ];
-              });
+        const drainInterpretQueue = async () => {
+          if (interpretDrainingRef.current) return;
+          interpretDrainingRef.current = true;
+          setInterpretStatus('processing');
+          const combinedContext = useGlossaryAndBriefing
+            ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
+            : '';
+          while (interpretQueueRef.current.length > 0) {
+            const pcm = interpretQueueRef.current.shift()!;
+            try {
+              const result = await interpretAudio(pcm, combinedContext || undefined);
+              const englishLine = result.englishText ?? '';
+              if (englishLine) {
+                setTranslationSegments((prev) => {
+                  const lastText = prev[prev.length - 1]?.text ?? '';
+                  if (isDuplicate(englishLine, lastText)) return prev;
+                  const ctx = recentContextRef.current;
+                  recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
+                    .split('\n')
+                    .filter(Boolean)
+                    .slice(-2)
+                    .join('\n');
+                  return [
+                    ...prev,
+                    {
+                      id: ++segmentIdRef.current,
+                      text: englishLine,
+                      shownAt: Date.now(),
+                      burmeseText: result.burmeseText?.trim() || undefined,
+                    },
+                  ];
+                });
+              }
+              if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : 'Interpret failed';
+              setError(msg);
+              pushErrorLog('error', `Interpret: ${msg}`);
             }
-            if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : 'Interpret failed';
-            setError(msg);
-            pushErrorLog('error', `Interpret: ${msg}`);
-          } finally {
-            if (stopCaptureRef.current) setInterpretStatus('listening');
           }
+          interpretDrainingRef.current = false;
+          if (stopCaptureRef.current) setInterpretStatus('listening');
+        };
+
+        const stop = await captureAudioChunks(stream, (pcm) => {
+          interpretQueueRef.current.push(pcm);
+          void drainInterpretQueue();
         });
       stopCaptureRef.current = () => {
         stop();
+        interpretQueueRef.current = [];
+        interpretDrainingRef.current = false;
         recentContextRef.current = '';
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();

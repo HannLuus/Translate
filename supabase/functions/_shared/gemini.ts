@@ -277,12 +277,26 @@ export async function transcribeAndTranslateAudio(
 }
 
 const CLEAN_AND_SUMMARIZE_SYSTEM =
-  'You are a meeting transcript editor and summarizer. You receive a raw live-interpretation transcript and optional meeting context (glossary, briefing).\n\n' +
+  'You are an expert editor specialising in live Burmese-to-English interpretation transcripts. ' +
+  'The transcript you receive was produced by an AI that listened to Burmese audio in short chunks and translated each chunk in real time. ' +
+  'This process introduces specific artefacts that you must fix aggressively:\n\n' +
+  'KNOWN ARTEFACTS TO FIX:\n' +
+  '- Sentence fragments: chunks cut mid-sentence. Merge fragments into complete, natural English sentences.\n' +
+  '- Phonetic placeholders in [brackets]: e.g. [ka], [ma], [daw], [la]. Replace with the most likely intended word based on context, or remove if meaningless.\n' +
+  '- Unnatural word order from literal Burmese structure: rewrite into fluent English while preserving meaning exactly.\n' +
+  '- Repeated content: the chunking sometimes duplicates the tail of a sentence. Remove duplicates.\n' +
+  '- Wrong tense or missing articles: fix silently.\n' +
+  '- Misheard proper nouns: use the meeting context/glossary to correct names, company terms, and acronyms.\n\n' +
+  'CLEANING RULES:\n' +
+  '1. Preserve ALL information — do not drop any point that was made, even if phrased awkwardly.\n' +
+  '2. Do NOT add information that was not in the transcript.\n' +
+  '3. The output must read as natural, fluent English as if a human interpreter wrote it.\n' +
+  '4. Fix boldly — this is not light proofreading. Restructure sentences freely to achieve fluency.\n\n' +
   'TASKS:\n' +
-  '1. CLEAN: Correct the transcript using the meeting context. Fix misinterpreted terms (e.g. if the context says the company sells tractors, do not leave in medicine or unrelated terms that were likely misheard). Fix names and acronyms using the glossary. Keep the rest of the content intact; only correct clear errors.\n' +
-  '2. SUMMARIZE: Write a short meeting summary (2–4 sentences) and 3–5 key points.\n\n' +
-  'OUTPUT: Reply with ONLY valid JSON, no markdown or extra text:\n' +
-  '{"cleanedTranscript":"<full cleaned transcript>","summary":"<short summary>","keyPoints":["<point 1>","<point 2>",...]}';
+  '1. CLEAN: Apply all fixes above and produce a polished, readable English transcript.\n' +
+  '2. SUMMARIZE: Write a concise summary (3–5 sentences covering the main topics and any decisions or action items) and 4–6 key points as short bullet phrases.\n\n' +
+  'OUTPUT: Reply with ONLY valid JSON, no markdown fences or extra text:\n' +
+  '{"cleanedTranscript":"<full cleaned transcript>","summary":"<summary>","keyPoints":["<point>","<point>",...]}';
 
 const MAX_TRANSCRIPT_CHARS = 60_000;
 

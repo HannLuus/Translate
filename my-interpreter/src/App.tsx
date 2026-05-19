@@ -5,10 +5,11 @@ import { PermissionChecker, checkPermissions } from './components/PermissionChec
 import { ConversationView } from './components/ConversationView';
 import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
+import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
 import { getCaptureStream, captureAudioChunks } from './audioCapture';
 import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
-import type { CaptureMode, PermissionState, TranslationSegment, CleanSummarizeResult } from './types';
+import type { CaptureMode, PermissionState, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
 import './App.css';
 
 /**
@@ -30,39 +31,46 @@ function isDuplicate(candidate: string, lastLine: string): boolean {
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
 const LOOPBACK_STORAGE_KEY = 'interpreter-loopback-device-id';
 const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
-const MEETING_CONTEXT_STORAGE_KEY = 'interpreter-meeting-context';
-const PERMANENT_GLOSSARY_STORAGE_KEY = 'interpreter-permanent-glossary';
 const USE_GLOSSARY_BRIEFING_STORAGE_KEY = 'interpreter-use-glossary-briefing';
+const SCENARIO_PROFILES_KEY = 'interpreter-scenario-profiles';
+const ACTIVE_PROFILE_ID_KEY = 'interpreter-active-profile-id';
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
-export type GlossaryEntry = { id: number; term: string; meaning: string };
-
-function parseGlossaryString(str: string): GlossaryEntry[] {
-  const entries: GlossaryEntry[] = [];
-  const lines = str.split(/[\n,;]/).map((s) => s.trim()).filter(Boolean);
-  for (const line of lines) {
-    const match = line.match(/^(.+?)\s*[=:]\s*(.+)$/);
-    if (match) {
-      entries.push({ id: Date.now() + Math.random(), term: match[1].trim(), meaning: match[2].trim() });
-    }
-  }
-  return entries;
-}
-
-function loadGlossaryFromStorage(): GlossaryEntry[] {
-  const raw = localStorage.getItem(PERMANENT_GLOSSARY_STORAGE_KEY);
-  if (!raw) return [];
+function parseLegacyGlossary(raw: string): GlossaryEntry[] {
   try {
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.every((e) => e && typeof e.term === 'string' && typeof e.meaning === 'string')) {
       return parsed.map((e) => ({ id: e.id ?? Date.now() + Math.random(), term: e.term.trim(), meaning: e.meaning.trim() }));
     }
-    if (typeof parsed === 'string') return parseGlossaryString(parsed);
-    return [];
-  } catch {
-    return parseGlossaryString(raw);
+  } catch { /* fall through */ }
+  const entries: GlossaryEntry[] = [];
+  const lines = raw.split(/[\n,;]/).map((s) => s.trim()).filter(Boolean);
+  for (const line of lines) {
+    const match = line.match(/^(.+?)\s*[=:]\s*(.+)$/);
+    if (match) entries.push({ id: Date.now() + Math.random(), term: match[1].trim(), meaning: match[2].trim() });
   }
+  return entries;
+}
+
+function loadProfiles(): ScenarioProfile[] {
+  const stored = localStorage.getItem(SCENARIO_PROFILES_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed as ScenarioProfile[];
+    } catch { /* fall through */ }
+  }
+  const oldBriefing = localStorage.getItem('interpreter-meeting-context') ?? '';
+  const oldGlossaryRaw = localStorage.getItem('interpreter-permanent-glossary');
+  const oldGlossary: GlossaryEntry[] = oldGlossaryRaw ? parseLegacyGlossary(oldGlossaryRaw) : [];
+  return [{ id: 'profile-default', name: 'My Default', briefing: oldBriefing, glossary: oldGlossary, createdAt: Date.now() }];
+}
+
+function loadActiveProfileId(profiles: ScenarioProfile[]): string {
+  const stored = localStorage.getItem(ACTIVE_PROFILE_ID_KEY);
+  if (stored && profiles.find((p) => p.id === stored)) return stored;
+  return profiles[0].id;
 }
 
 function glossaryEntriesToText(entries: GlossaryEntry[]): string {
@@ -83,14 +91,10 @@ function App() {
     });
   }, []);
 
-  const [glossaryEntries, setGlossaryEntries] = useState<GlossaryEntry[]>(loadGlossaryFromStorage);
-  const [editingGlossaryId, setEditingGlossaryId] = useState<number | null>(null);
-  const [glossarySaveFeedback, setGlossarySaveFeedback] = useState(false);
-  const [glossaryExpanded, setGlossaryExpanded] = useState(false);
-  const [briefingSaveFeedback, setBriefingSaveFeedback] = useState(false);
-  const [meetingContext, setMeetingContext] = useState(() => {
-    return localStorage.getItem(MEETING_CONTEXT_STORAGE_KEY) ?? '';
-  });
+  const [profiles, setProfiles] = useState<ScenarioProfile[]>(loadProfiles);
+  const [activeProfileId, setActiveProfileId] = useState<string>(() => loadActiveProfileId(profiles));
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
+
   const [useGlossaryAndBriefing, setUseGlossaryAndBriefing] = useState(() => {
     const stored = localStorage.getItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY);
     return stored !== '0';
@@ -174,11 +178,11 @@ function App() {
     localStorage.setItem(TESTING_MODE_STORAGE_KEY, testingMode ? '1' : '0');
   }, [testingMode]);
   useEffect(() => {
-    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
-  }, [glossaryEntries]);
+    localStorage.setItem(SCENARIO_PROFILES_KEY, JSON.stringify(profiles));
+  }, [profiles]);
   useEffect(() => {
-    localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
-  }, [meetingContext]);
+    localStorage.setItem(ACTIVE_PROFILE_ID_KEY, activeProfileId);
+  }, [activeProfileId]);
   useEffect(() => {
     localStorage.setItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY, useGlossaryAndBriefing ? '1' : '0');
   }, [useGlossaryAndBriefing]);
@@ -223,7 +227,7 @@ function App() {
           interpretDrainingRef.current = true;
           setInterpretStatus('processing');
           const combinedContext = useGlossaryAndBriefing
-            ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
+            ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
             : '';
           while (interpretQueueRef.current.length > 0) {
             const pcm = interpretQueueRef.current.shift()!;
@@ -288,7 +292,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, glossaryEntries, meetingContext, useGlossaryAndBriefing]);
+  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, activeProfile, useGlossaryAndBriefing]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -371,178 +375,17 @@ function App() {
         </label>
 
         {!active && (
-          <details className="app__context-panel">
-            <summary>Meeting Briefing & Glossary (Optional)</summary>
-            <label className="app__glossary-use-toggle" title="Turn off for face-to-face or casual conversations so the interpreter does not use company terms or meeting context.">
-              <input
-                type="checkbox"
-                checked={useGlossaryAndBriefing}
-                onChange={(e) => setUseGlossaryAndBriefing(e.target.checked)}
-              />
-              <span>Use glossary and briefing in interpretation</span>
-            </label>
-            <div className="app__context-group">
-              <div className="app__glossary-summary-wrap">
-                <button
-                  type="button"
-                  className="app__glossary-summary-btn"
-                  onClick={() => setGlossaryExpanded((e) => !e)}
-                  aria-expanded={glossaryExpanded}
-                >
-                  <span className="app__glossary-summary-label">
-                    Permanent Glossary (Company names, acronyms, standard terms)
-                  </span>
-                  <span className="app__glossary-summary-count">
-                    {glossaryEntries.length} {glossaryEntries.length === 1 ? 'entry' : 'entries'}
-                    {glossarySaveFeedback ? ' • Saved!' : ' saved'}
-                  </span>
-                  <span className="app__glossary-summary-chevron" aria-hidden>{glossaryExpanded ? '▼' : '▶'}</span>
-                </button>
-              </div>
-              {!glossaryExpanded && (
-                <p className="app__context-hint">Click above to add, edit, or remove entries. Used in interpretation when the option above is checked.</p>
-              )}
-              {glossaryExpanded && (
-                <>
-                  <p className="app__context-hint">Saves across all meetings. Add, edit, or remove entries below, then Save glossary.</p>
-                  <div className="app__glossary-list">
-                {glossaryEntries.map((entry) => (
-                  <div key={entry.id} className="app__glossary-row">
-                    {editingGlossaryId === entry.id ? (
-                      <>
-                        <input
-                          className="app__glossary-input"
-                          value={entry.term}
-                          onChange={(e) =>
-                            setGlossaryEntries((prev) =>
-                              prev.map((x) => (x.id === entry.id ? { ...x, term: e.target.value } : x))
-                            )
-                          }
-                          placeholder="Term / acronym"
-                        />
-                        <input
-                          className="app__glossary-input"
-                          value={entry.meaning}
-                          onChange={(e) =>
-                            setGlossaryEntries((prev) =>
-                              prev.map((x) => (x.id === entry.id ? { ...x, meaning: e.target.value } : x))
-                            )
-                          }
-                          placeholder="Meaning"
-                        />
-                        <button
-                          type="button"
-                          className="app__glossary-btn app__glossary-btn--save"
-                          onClick={() => setEditingGlossaryId(null)}
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          className="app__glossary-btn app__glossary-btn--cancel"
-                          onClick={() => {
-                            setEditingGlossaryId(null);
-                            if (!entry.term.trim() && !entry.meaning.trim()) {
-                              setGlossaryEntries((prev) => prev.filter((e) => e.id !== entry.id));
-                            }
-                          }}
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="app__glossary-term">{entry.term || '(term)'}</span>
-                        <span className="app__glossary-meaning">{entry.meaning || '(meaning)'}</span>
-                        <button
-                          type="button"
-                          className="app__glossary-btn app__glossary-btn--edit"
-                          onClick={() => setEditingGlossaryId(entry.id)}
-                          aria-label="Edit entry"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          type="button"
-                          className="app__glossary-btn app__glossary-btn--delete"
-                          onClick={() => {
-                            setGlossaryEntries((prev) => prev.filter((e) => e.id !== entry.id));
-                            if (editingGlossaryId === entry.id) setEditingGlossaryId(null);
-                          }}
-                          aria-label="Delete entry"
-                        >
-                          Delete
-                        </button>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="app__glossary-actions">
-                <button
-                  type="button"
-                  className="app__glossary-btn app__glossary-btn--add"
-                  onClick={() => {
-                    const id = Date.now();
-                    setGlossaryEntries((prev) => [...prev, { id, term: '', meaning: '' }]);
-                    setEditingGlossaryId(id);
-                  }}
-                >
-                  Add new entry
-                </button>
-                <button
-                  type="button"
-                  className="app__glossary-btn app__glossary-btn--save-glossary"
-                  onClick={() => {
-                    localStorage.setItem(PERMANENT_GLOSSARY_STORAGE_KEY, JSON.stringify(glossaryEntries));
-                    setGlossarySaveFeedback(true);
-                    setGlossaryExpanded(false);
-                    window.setTimeout(() => setGlossarySaveFeedback(false), 2000);
-                  }}
-                >
-                  {glossarySaveFeedback ? 'Saved!' : 'Save glossary'}
-                </button>
-              </div>
-                </>
-              )}
-            </div>
-
-            <div className="app__context-group">
-              <label className="app__context-label">Meeting Specific Briefing</label>
-              <p className="app__context-hint">Specific to today's call. Sent to the AI when you start interpretation if "Use glossary and briefing" is on.</p>
-              <textarea
-                className="app__context-input"
-                value={meetingContext}
-                onChange={(e) => setMeetingContext(e.target.value)}
-                placeholder="Add meeting specific context here..."
-                disabled={active}
-              />
-              <div className="app__context-briefing-actions">
-                <button
-                  type="button"
-                  className="app__context-save-btn"
-                  onClick={() => {
-                    localStorage.setItem(MEETING_CONTEXT_STORAGE_KEY, meetingContext);
-                    setBriefingSaveFeedback(true);
-                    window.setTimeout(() => setBriefingSaveFeedback(false), 2000);
-                  }}
-                >
-                  {briefingSaveFeedback ? 'Saved!' : 'Save meeting briefing'}
-                </button>
-                <button
-                  type="button"
-                  className="app__context-clear-btn"
-                  onClick={() => {
-                    setMeetingContext('');
-                    localStorage.removeItem(MEETING_CONTEXT_STORAGE_KEY);
-                  }}
-                >
-                  Clear for next meeting
-                </button>
-              </div>
-            </div>
-          </details>
+          <ScenarioProfilePanel
+            profiles={profiles}
+            activeProfileId={activeProfileId}
+            disabled={active}
+            useGlossaryAndBriefing={useGlossaryAndBriefing}
+            onUseGlossaryAndBriefingChange={setUseGlossaryAndBriefing}
+            onProfilesChange={setProfiles}
+            onActiveProfileIdChange={setActiveProfileId}
+          />
         )}
+
 
         {mode === 'desktop' && !active && (
           <p className="app__desktop-hint" role="status">
@@ -626,7 +469,7 @@ function App() {
                 setCleanSummarizeStatus('loading');
                 const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
                 const combinedContext = useGlossaryAndBriefing
-                  ? [glossaryEntriesToText(glossaryEntries), meetingContext.trim()].filter(Boolean).join('\n\n')
+                  ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
                   : '';
                 try {
                   const result = await cleanAndSummarize(fullScript || '', combinedContext || undefined);

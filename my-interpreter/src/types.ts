@@ -30,3 +30,13 @@ export interface TranslationSegment {
   /** Filled for interpretation segments (Burmese heard); absent for response segments. */
   burmeseText?: string;
 }
+
+export type GlossaryEntry = { id: number; term: string; meaning: string };
+
+export interface ScenarioProfile {
+  id: string;
+  name: string;
+  briefing: string;
+  glossary: GlossaryEntry[];
+  createdAt: number;
+}

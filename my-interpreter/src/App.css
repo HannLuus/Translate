@@ -388,6 +388,63 @@
   margin-bottom: 0.5rem;
 }
 
+.app__profile-selector {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.app__profile-tab {
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.app__profile-tab:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.app__profile-tab--active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #fff;
+}
+
+.app__profile-tab--active:hover:not(:disabled) {
+  background: #1e293b;
+  border-color: #1e293b;
+}
+
+.app__profile-tab--add {
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-style: dashed;
+}
+
+.app__profile-tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.app__profile-name-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.app__profile-name-input {
+  flex: 1;
+}
+
 .app__context-panel summary {
   cursor: pointer;
   font-weight: 600;

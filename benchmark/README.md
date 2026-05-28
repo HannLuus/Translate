@@ -56,6 +56,14 @@ ELEVENLABS_MYANMAR_KEYTERMS=မြန်မာ,ရန်ကုန်
 
 Without `ELEVENLABS_API_KEY`, the pipeline falls back to Google Speech-to-Text Chirp (`my-MM`).
 
+English response audio (`/response-audio`) uses **Groq Whisper** (`whisper-large-v3`) when `GROQ_API_KEY` is set — same batch provider as WhisperWarp — with Google Chirp as fallback.
+
+```bash
+GROQ_API_KEY=your_key_here
+GROQ_MODEL=whisper-large-v3
+GROQ_EN_PROMPT=Optional English context prompt
+```
+
 ## 3) Rollout flags
 
 Frontend capture flags (localStorage):

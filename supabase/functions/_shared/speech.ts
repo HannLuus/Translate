@@ -1,5 +1,6 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
 import { transcribeBurmeseElevenLabs } from './elevenlabsStt.ts';
+import { transcribeEnglishGroq } from './groqStt.ts';
 import { buildPhraseHints, parseGlossaryHints, type GlossaryHint } from './terminology.ts';
 import type { SttAlternative, SttResult } from './sttTypes.ts';
 
@@ -208,6 +209,16 @@ export async function transcribeBurmese(
 
 export async function transcribeEnglish(audioBytes: Uint8Array): Promise<string> {
   if (audioBytes.length < MIN_AUDIO_BYTES) return '';
+
+  if (Deno.env.get('GROQ_API_KEY')) {
+    try {
+      const groq = await transcribeEnglishGroq(audioBytes);
+      if (groq.transcript) return groq.transcript;
+    } catch (err) {
+      console.warn('[STT] Groq English failed, falling back to Google Chirp:', err);
+    }
+  }
+
   const audioBase64 = bytesToBase64(audioBytes);
   const result = await recognizeAudioDetailed(audioBase64, ['en-US']);
   return result.transcript;

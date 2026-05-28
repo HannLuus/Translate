@@ -1,0 +1,8 @@
+Translate app – segment metrics
+Generated: 2026-05-28T00:00:00.000Z
+Sample count: 3
+
+--- Samples ---
+{"latencyMs":2100,"sttConfidence":0.91,"sttPath":"speech_api","fallbackReason":null,"emptyOutput":false,"secondPassUsed":false,"capturedAt":"2026-05-28T00:00:01.000Z"}
+{"latencyMs":3200,"sttConfidence":0.68,"sttPath":"speech_api_refined","fallbackReason":null,"emptyOutput":false,"secondPassUsed":true,"capturedAt":"2026-05-28T00:00:05.000Z"}
+{"latencyMs":2800,"sttConfidence":0.84,"sttPath":"speech_api","fallbackReason":null,"emptyOutput":false,"secondPassUsed":false,"capturedAt":"2026-05-28T00:00:09.000Z"}

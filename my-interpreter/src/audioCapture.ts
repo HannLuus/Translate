@@ -12,18 +12,34 @@ const FRAME_SAMPLES = 4096;
 const FRAME_MS = (FRAME_SAMPLES / SAMPLE_RATE_CAPTURE) * 1000; // ≈ 85 ms
 
 // ---------------------------------------------------------------------------
-// Pause-detection settings
-// A real interpreter waits for a natural pause before speaking.
-// We do the same: accumulate audio until the speaker pauses, then send.
+// Segmentation settings
 // ---------------------------------------------------------------------------
-const SILENCE_RMS       = 0.02;   // RMS below this = silence (covers typical meeting room ambient noise)
-const PAUSE_GAP_MS      = 600;    // speaker pauses 0.6 s = end of utterance (natural speech rhythm)
-const MIN_SPEECH_MS     = 800;    // ignore clips shorter than 0.8 s (noise blip)
-const MAX_SPEECH_MS     = 20000;  // force-send after 20 s even without a pause
+const MIN_SILENCE_RMS = 0.012;
+const NOISE_FLOOR_ALPHA = 0.08;
+const SPEECH_MULTIPLIER = 3.5;
+const SPEECH_MARGIN = 0.006;
 
-const PAUSE_FRAMES_NEEDED = Math.ceil(PAUSE_GAP_MS / FRAME_MS);   // ~14 frames
-const MAX_SPEECH_FRAMES   = Math.ceil(MAX_SPEECH_MS / FRAME_MS);  // ~235 frames
-const MIN_SPEECH_FRAMES   = Math.ceil(MIN_SPEECH_MS / FRAME_MS);  //  ~18 frames
+const PAUSE_GAP_MS = 600;
+const MIN_SPEECH_MS = 800;
+const MAX_SPEECH_MS = 20000;
+/** Overlap tail prepended to next chunk to avoid word loss at boundaries. */
+const OVERLAP_MS = 350;
+
+const PAUSE_FRAMES_NEEDED = Math.ceil(PAUSE_GAP_MS / FRAME_MS);
+const MAX_SPEECH_FRAMES = Math.ceil(MAX_SPEECH_MS / FRAME_MS);
+const MIN_SPEECH_FRAMES = Math.ceil(MIN_SPEECH_MS / FRAME_MS);
+const OVERLAP_FRAMES = Math.max(2, Math.ceil(OVERLAP_MS / FRAME_MS));
+
+// Feature flags (localStorage overrides for rollout testing)
+const FLAG_ADAPTIVE_VAD = 'interpreter-adaptive-vad';
+const FLAG_OVERLAP_CHUNKS = 'interpreter-overlap-chunks';
+
+function isFlagEnabled(key: string, defaultOn = true): boolean {
+  const stored = localStorage.getItem(key);
+  if (stored === '0') return false;
+  if (stored === '1') return true;
+  return defaultOn;
+}
 
 // ---------------------------------------------------------------------------
 // Audio helpers
@@ -78,6 +94,11 @@ function concatenateInt16(arrays: Int16Array[]): Int16Array {
   return out;
 }
 
+function tailFrames(frames: Int16Array[], count: number): Int16Array[] {
+  if (count <= 0 || frames.length === 0) return [];
+  return frames.slice(Math.max(0, frames.length - count));
+}
+
 // ---------------------------------------------------------------------------
 // Stream capture
 // ---------------------------------------------------------------------------
@@ -116,17 +137,17 @@ const WORKLET_URL = new URL(
 /**
  * Capture audio and fire `onChunk` at natural speech pauses.
  *
- * State machine:
- *   IDLE     → speaker silent; discard frames
- *   SPEAKING → speaker active; accumulate frames
- *              – after PAUSE_GAP_MS of silence  → flush to Gemini → IDLE
- *              – after MAX_SPEECH_MS total       → flush to Gemini → IDLE
+ * Adaptive VAD: rolling noise floor + speech multiplier threshold.
+ * Overlap: keep tail frames and prepend to next utterance.
  */
 export async function captureAudioChunks(
   stream: MediaStream,
   onChunk: ChunkCallback
 ): Promise<() => void> {
   if (stream.getAudioTracks().length === 0) throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+
+  const adaptiveVad = isFlagEnabled(FLAG_ADAPTIVE_VAD, true);
+  const overlapChunks = isFlagEnabled(FLAG_OVERLAP_CHUNKS, true);
 
   const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
   if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
@@ -140,17 +161,30 @@ export async function captureAudioChunks(
   let stopped = false;
   let state: 'idle' | 'speaking' = 'idle';
   let speechFrames: Int16Array[] = [];
+  let overlapPrefix: Int16Array[] = [];
   let silenceFrameCount = 0;
+  let noiseFloor = MIN_SILENCE_RMS;
+
+  function speechThreshold(): number {
+    if (!adaptiveVad) return MIN_SILENCE_RMS;
+    return Math.max(MIN_SILENCE_RMS, noiseFloor * SPEECH_MULTIPLIER + SPEECH_MARGIN);
+  }
+
+  function updateNoiseFloor(rms: number, isSilent: boolean): void {
+    if (!adaptiveVad || !isSilent) return;
+    noiseFloor = noiseFloor * (1 - NOISE_FLOOR_ALPHA) + rms * NOISE_FLOOR_ALPHA;
+  }
 
   function flush() {
     if (speechFrames.length < MIN_SPEECH_FRAMES) {
-      // Too short — likely noise, not real speech
       speechFrames = [];
       silenceFrameCount = 0;
       state = 'idle';
       return;
     }
+
     const pcm = concatenateInt16(speechFrames);
+    overlapPrefix = overlapChunks ? tailFrames(speechFrames, OVERLAP_FRAMES) : [];
     speechFrames = [];
     silenceFrameCount = 0;
     state = 'idle';
@@ -161,28 +195,34 @@ export async function captureAudioChunks(
     if (stopped) return;
 
     const int16_16k = downsampleFrom48k(floatTo16BitPcm(e.data.frame));
-    const silent = rmsEnergy(int16_16k) < SILENCE_RMS;
+    const rms = rmsEnergy(int16_16k);
+    const threshold = speechThreshold();
+    const silent = rms < threshold;
+    updateNoiseFloor(rms, silent);
 
     if (state === 'idle') {
       if (!silent) {
         state = 'speaking';
-        speechFrames.push(int16_16k);
+        if (overlapPrefix.length > 0) {
+          speechFrames = [...overlapPrefix, int16_16k];
+          overlapPrefix = [];
+        } else {
+          speechFrames.push(int16_16k);
+        }
         silenceFrameCount = 0;
       }
-      // drop silent frames while idle
     } else {
-      // state === 'speaking'
       speechFrames.push(int16_16k);
 
       if (silent) {
         silenceFrameCount++;
         if (silenceFrameCount >= PAUSE_FRAMES_NEEDED) {
-          flush(); // natural pause detected — interpret this utterance
+          flush();
         }
       } else {
         silenceFrameCount = 0;
         if (speechFrames.length >= MAX_SPEECH_FRAMES) {
-          flush(); // speaker went on too long — send what we have
+          flush();
         }
       }
     }
@@ -194,7 +234,7 @@ export async function captureAudioChunks(
   const stop = () => {
     stopped = true;
     if (state === 'speaking' && speechFrames.length >= MIN_SPEECH_FRAMES) {
-      flush(); // send any remaining speech when user stops
+      flush();
     }
     try { node.disconnect(); source.disconnect(); audioContext.close(); } catch (_) {}
   };

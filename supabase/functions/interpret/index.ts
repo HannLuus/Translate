@@ -1,10 +1,29 @@
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { transcribeAndTranslateAudio } from '../_shared/gemini.ts';
+import { createDiagnostics, logInterpretMetrics } from '../_shared/metrics.ts';
 import { synthesizeSpeech } from '../_shared/tts.ts';
+import type { TermLockMap } from '../_shared/terminology.ts';
+
+function parseTermLockHeader(raw: string | null): TermLockMap {
+  if (!raw?.trim()) return {};
+  try {
+    const decoded = decodeURIComponent(raw);
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    const lock: TermLockMap = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'string' && k.trim()) lock[k.toLowerCase()] = v;
+    }
+    return lock;
+  } catch {
+    return {};
+  }
+}
 
 Deno.serve(async (req) => {
   const cors = handleCors(req);
   if (cors) return cors;
+
+  const startedAt = Date.now();
 
   try {
     const arrayBuffer = await req.arrayBuffer();
@@ -27,11 +46,15 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { burmeseText, englishText } = await transcribeAndTranslateAudio(audioBytes, meetingContext);
+    const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock } =
+      await transcribeAndTranslateAudio(audioBytes, meetingContext, parseTermLockHeader(req.headers.get('x-term-lock')));
+
+    const diagnostics = createDiagnostics(startedAt, partialDiagnostics, burmeseText, englishText);
+    logInterpretMetrics(diagnostics);
 
     if (!englishText) {
       return new Response(
-        JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null }),
+        JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null, diagnostics, termLock }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
@@ -41,11 +64,10 @@ Deno.serve(async (req) => {
       audioBase64 = await synthesizeSpeech(englishText, 'en-US');
     } catch (ttsErr) {
       console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
-      // Still return translation; client can show text without playback
     }
 
     return new Response(
-      JSON.stringify({ burmeseText, englishText, audioBase64 }),
+      JSON.stringify({ burmeseText, englishText, audioBase64, diagnostics, termLock }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (err) {

@@ -1,9 +1,25 @@
 export type CaptureMode = 'desktop' | 'rooted_android' | 'face_to_face';
 
+export type SttPath = 'speech_api' | 'speech_api_refined' | 'gemini_audio_fallback';
+
+export interface InterpretDiagnostics {
+  latencyMs: number;
+  sttConfidence: number | null;
+  sttPath: SttPath;
+  fallbackReason: string | null;
+  emptyOutput: boolean;
+  secondPassUsed: boolean;
+}
+
+/** Session-level glossary term lock (source term -> English rendering). */
+export type TermLockMap = Record<string, string>;
+
 export interface InterpretResult {
   burmeseText: string;
   englishText: string;
   audioBase64: string | null;
+  diagnostics?: InterpretDiagnostics;
+  termLock?: TermLockMap;
 }
 
 export interface ResponseResult {
@@ -22,15 +38,6 @@ export interface PermissionState {
   microphone: 'unknown' | 'granted' | 'blocked';
 }
 
-/** One translation segment shown in the conversation view. */
-export interface TranslationSegment {
-  id: number;
-  text: string;
-  shownAt: number;
-  /** Filled for interpretation segments (Burmese heard); absent for response segments. */
-  burmeseText?: string;
-}
-
 export type GlossaryEntry = { id: number; term: string; meaning: string };
 
 export interface ScenarioProfile {
@@ -40,3 +47,13 @@ export interface ScenarioProfile {
   glossary: GlossaryEntry[];
   createdAt: number;
 }
+
+/** One translation segment shown in the conversation view. */
+export interface TranslationSegment {
+  id: number;
+  text: string;
+  shownAt: number;
+  /** Filled for interpretation segments (Burmese heard); absent for response segments. */
+  burmeseText?: string;
+}
+

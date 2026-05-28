@@ -1,24 +1,39 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
+import type { InterpretDiagnostics } from './metrics.ts';
+import {
+  applyTermLock,
+  buildTerminologyPrompt,
+  parseGlossaryHints,
+  type TermLockMap,
+} from './terminology.ts';
+import {
+  refineBurmeseTranscription,
+  STT_CONFIDENCE_THRESHOLD,
+  transcribeBurmeseDetailed,
+  type SttResult,
+} from './speech.ts';
 
-/**
- * Model used with the Gemini Developer API (generativelanguage.googleapis.com).
- * gemini-2.5-flash supports audio, text, and all features needed here.
- */
 const GEMINI_DEV_MODEL = 'gemini-2.5-flash';
-
-/** Model used with the Vertex AI regional endpoint (fallback if only service account is set). */
 const VERTEX_MODEL = 'gemini-2.0-flash-001';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,
   topP: 0.95,
   candidateCount: 1,
-  /** Raised from 8192 to reduce truncation (MAX_TOKENS) in interpret/translate. */
   maxOutputTokens: 16384,
 };
 
-// Minimum 0.5 s of 16kHz 16-bit mono PCM before sending to Gemini
 const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
+
+function isConfidenceRoutingEnabled(): boolean {
+  const flag = Deno.env.get('CONFIDENCE_ROUTING');
+  return flag !== '0';
+}
+
+function isSecondPassRefineEnabled(): boolean {
+  const flag = Deno.env.get('SECOND_PASS_REFINE');
+  return flag !== '0';
+}
 
 // ---------------------------------------------------------------------------
 // System instructions
@@ -55,7 +70,6 @@ const ENGLISH_TO_BURMESE_SYSTEM =
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Wrap raw 16-bit PCM bytes in a WAV container so Gemini can decode them. */
 function pcmToWav(pcm16: Uint8Array, sampleRate = 16000): Uint8Array {
   const numChannels = 1;
   const bitsPerSample = 16;
@@ -65,18 +79,18 @@ function pcmToWav(pcm16: Uint8Array, sampleRate = 16000): Uint8Array {
   const buf = new ArrayBuffer(44 + dataSize);
   const v = new DataView(buf);
 
-  v.setUint32(0,  0x52494646, false); // "RIFF"
+  v.setUint32(0,  0x52494646, false);
   v.setUint32(4,  36 + dataSize, true);
-  v.setUint32(8,  0x57415645, false); // "WAVE"
-  v.setUint32(12, 0x666d7420, false); // "fmt "
+  v.setUint32(8,  0x57415645, false);
+  v.setUint32(12, 0x666d7420, false);
   v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true);           // PCM
+  v.setUint16(20, 1, true);
   v.setUint16(22, numChannels, true);
   v.setUint32(24, sampleRate, true);
   v.setUint32(28, byteRate, true);
   v.setUint16(32, blockAlign, true);
   v.setUint16(34, bitsPerSample, true);
-  v.setUint32(36, 0x64617461, false); // "data"
+  v.setUint32(36, 0x64617461, false);
   v.setUint32(40, dataSize, true);
   new Uint8Array(buf).set(pcm16, 44);
   return new Uint8Array(buf);
@@ -98,12 +112,21 @@ function buildUserMessage(currentText: string, recentContext?: string | null): s
   return `Recent context (prior English translation): ${recentContext.trim()}\n\nCurrent to translate: ${trimmed}`;
 }
 
+function buildTranslationContext(
+  meetingContext?: string | null,
+  termLock?: TermLockMap,
+): string | null {
+  const hints = parseGlossaryHints(meetingContext);
+  const terminology = buildTerminologyPrompt(hints, termLock);
+  if (!terminology && !meetingContext?.trim()) return meetingContext ?? null;
+  if (!terminology) return meetingContext ?? null;
+  return [meetingContext?.trim(), terminology].filter(Boolean).join('\n\n');
+}
+
 function getVertexRegion(): string {
   return Deno.env.get('VERTEX_AI_REGION') ?? 'us-central1';
 }
 
-
-/** Vertex AI generateContent request/response shapes (REST API). */
 interface VertexPart {
   text?: string;
   inlineData?: { mimeType: string; data: string };
@@ -128,17 +151,6 @@ interface VertexGenerateResponse {
   promptFeedback?: { blockReason?: string };
 }
 
-/**
- * Call Gemini generateContent.
- *
- * Priority:
- *   1. VERTEX_AI_API_KEY → Gemini Developer API (generativelanguage.googleapis.com)
- *      Uses gemini-2.5-flash; no project ID needed; API key in query param.
- *   2. GOOGLE_APPLICATION_CREDENTIALS_JSON → Vertex AI regional endpoint
- *      Uses gemini-2.0-flash-001 with OAuth2 bearer token.
- *
- * Both APIs share the same request/response body schema.
- */
 async function vertexGenerateContent(
   contents: VertexContent[],
   systemInstruction?: string | null,
@@ -186,33 +198,39 @@ async function vertexGenerateContent(
   return { text: text.trim(), blockReason, finishReason };
 }
 
-/** Delays for retry backoff (rate limits in long meetings). */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** True if the error is a Gemini/Vertex rate limit or quota error — safe to retry. */
 function isRetryableError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
   return /429|quota|Quota exceeded|resource_exhausted|rate limit|RESOURCE_EXHAUSTED|too many requests/i.test(msg);
 }
 
-const RETRY_DELAYS_MS = [2000, 4000, 8000]; // 3 retries after initial attempt (4 attempts total)
+const RETRY_DELAYS_MS = [2000, 4000, 8000];
 
-// ---------------------------------------------------------------------------
-// Exports
-// ---------------------------------------------------------------------------
+export interface InterpretPipelineResult {
+  burmeseText: string;
+  englishText: string;
+  termLock: TermLockMap;
+  diagnostics: Omit<InterpretDiagnostics, 'latencyMs' | 'emptyOutput'>;
+}
 
-/**
- * Single-step Burmese audio → English translation via Vertex AI Gemini multimodal.
- * Uses the same service account as Speech-to-Text (GOOGLE_APPLICATION_CREDENTIALS_JSON).
- */
-export async function transcribeAndTranslateAudio(
+async function translateBurmeseToEnglish(
+  burmeseText: string,
+  meetingContext?: string | null,
+  termLock: TermLockMap = {},
+): Promise<{ englishText: string; termLock: TermLockMap }> {
+  const context = buildTranslationContext(meetingContext, termLock);
+  const englishText = (await translateWithGemini(burmeseText, true, context)).trim();
+  const hints = parseGlossaryHints(meetingContext);
+  return applyTermLock(burmeseText, englishText, hints, termLock);
+}
+
+async function runGeminiAudioFallback(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
 ): Promise<{ burmeseText: string; englishText: string }> {
-  if (audioBytes.length < MIN_AUDIO_BYTES) return { burmeseText: '', englishText: '' };
-
   const wavBytes = pcmToWav(audioBytes);
   const audioBase64 = bytesToBase64(wavBytes);
 
@@ -247,9 +265,7 @@ export async function transcribeAndTranslateAudio(
 
       const { text: raw, blockReason, finishReason } = await vertexGenerateContent(contents, systemPrompt);
 
-      if (blockReason) {
-        throw new Error(`Vertex blocked: ${blockReason}`);
-      }
+      if (blockReason) throw new Error(`Vertex blocked: ${blockReason}`);
       if (finishReason === 'MAX_TOKENS' && raw) {
         console.warn('[interpret] Response truncated (MAX_TOKENS); returning partial result');
       } else if (finishReason && finishReason !== 'STOP') {
@@ -276,6 +292,113 @@ export async function transcribeAndTranslateAudio(
   throw lastError;
 }
 
+async function resolveSttResult(
+  audioBytes: Uint8Array,
+  meetingContext?: string | null,
+): Promise<{ stt: SttResult; secondPassUsed: boolean; sttPath: InterpretDiagnostics['sttPath'] }> {
+  let stt = await transcribeBurmeseDetailed(audioBytes, meetingContext);
+  let secondPassUsed = false;
+  let sttPath: InterpretDiagnostics['sttPath'] = 'speech_api';
+
+  const routingEnabled = isConfidenceRoutingEnabled();
+  const refineEnabled = isSecondPassRefineEnabled();
+
+  if (
+    routingEnabled &&
+    refineEnabled &&
+    stt.transcript &&
+    stt.confidence < STT_CONFIDENCE_THRESHOLD
+  ) {
+    stt = await refineBurmeseTranscription(audioBytes, stt, meetingContext);
+    secondPassUsed = true;
+    sttPath = 'speech_api_refined';
+  }
+
+  return { stt, secondPassUsed, sttPath };
+}
+
+/**
+ * Burmese audio -> English translation with confidence-aware STT routing.
+ */
+export async function transcribeAndTranslateAudio(
+  audioBytes: Uint8Array,
+  meetingContext?: string | null,
+  termLock: TermLockMap = {},
+): Promise<InterpretPipelineResult> {
+  if (audioBytes.length < MIN_AUDIO_BYTES) {
+    return {
+      burmeseText: '',
+      englishText: '',
+      termLock,
+      diagnostics: {
+        sttConfidence: null,
+        sttPath: 'speech_api',
+        fallbackReason: null,
+        secondPassUsed: false,
+      },
+    };
+  }
+
+  try {
+    const { stt, secondPassUsed, sttPath } = await resolveSttResult(audioBytes, meetingContext);
+
+    if (stt.transcript) {
+      const { englishText, termLock: updatedLock } = await translateBurmeseToEnglish(
+        stt.transcript,
+        meetingContext,
+        termLock,
+      );
+
+      return {
+        burmeseText: stt.transcript,
+        englishText,
+        termLock: updatedLock,
+        diagnostics: {
+          sttConfidence: stt.confidence,
+          sttPath,
+          fallbackReason: null,
+          secondPassUsed,
+        },
+      };
+    }
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn('[interpret] Burmese Speech API path failed, falling back to Gemini audio:', reason);
+
+    try {
+      const fallback = await runGeminiAudioFallback(audioBytes, meetingContext);
+      return {
+        ...fallback,
+        termLock,
+        diagnostics: {
+          sttConfidence: null,
+          sttPath: 'gemini_audio_fallback',
+          fallbackReason: reason,
+          secondPassUsed: false,
+        },
+      };
+    } catch (fallbackErr) {
+      throw fallbackErr;
+    }
+  }
+
+  try {
+    const fallback = await runGeminiAudioFallback(audioBytes, meetingContext);
+    return {
+      ...fallback,
+      termLock,
+      diagnostics: {
+        sttConfidence: null,
+        sttPath: 'gemini_audio_fallback',
+        fallbackReason: 'empty_stt_transcript',
+        secondPassUsed: false,
+      },
+    };
+  } catch (err) {
+    throw err;
+  }
+}
+
 const CLEAN_AND_SUMMARIZE_SYSTEM =
   'You are an expert editor specialising in live Burmese-to-English interpretation transcripts. ' +
   'The transcript you receive was produced by an AI that listened to Burmese audio in short chunks and translated each chunk in real time. ' +
@@ -300,7 +423,6 @@ const CLEAN_AND_SUMMARIZE_SYSTEM =
 
 const MAX_TRANSCRIPT_CHARS = 60_000;
 
-/** Clean transcript using meeting context and produce summary + key points (Otter-style). */
 export async function cleanTranscriptAndSummarize(
   transcript: string,
   meetingContext?: string | null,
@@ -339,7 +461,6 @@ export async function cleanTranscriptAndSummarize(
       if (blockReason) {
         throw new Error(`Vertex blocked: ${blockReason}`);
       }
-      // When output hits token limit, still use whatever we got instead of failing the whole request
       if (finishReason === 'MAX_TOKENS' && raw) {
         console.warn('[clean-and-summarize] Response truncated (MAX_TOKENS); returning partial result');
       } else if (finishReason && finishReason !== 'STOP') {
@@ -382,7 +503,6 @@ export async function cleanTranscriptAndSummarize(
   throw lastError;
 }
 
-/** English → Burmese text translation (used by response / response-audio functions). */
 export async function translateWithGemini(
   text: string,
   toEnglish: boolean,

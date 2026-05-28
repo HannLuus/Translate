@@ -1,4 +1,4 @@
-import type { CleanSummarizeResult, InterpretResult, ResponseResult } from './types';
+import type { CleanSummarizeResult, InterpretDiagnostics, InterpretResult, ResponseResult, TermLockMap } from './types';
 
 /**
  * Supabase Edge Functions base URL.
@@ -114,15 +114,49 @@ async function doInterpret(
   return res.json() as Promise<InterpretResult>;
 }
 
-const INTERPRET_RETRY_DELAYS_MS = [3000, 6000]; // 2 retries (3 attempts total) for 503/rate limit
+const INTERPRET_RETRY_DELAYS_MS = [3000, 6000];
+
+export interface InterpretMetricsSample extends InterpretDiagnostics {
+  capturedAt: string;
+}
+
+const METRICS_STORAGE_KEY = 'interpreter-segment-metrics';
+
+export function appendInterpretMetrics(diagnostics: InterpretDiagnostics): void {
+  try {
+    const raw = sessionStorage.getItem(METRICS_STORAGE_KEY);
+    const existing = raw ? (JSON.parse(raw) as InterpretMetricsSample[]) : [];
+    existing.push({ ...diagnostics, capturedAt: new Date().toISOString() });
+    sessionStorage.setItem(METRICS_STORAGE_KEY, JSON.stringify(existing.slice(-200)));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+export function getInterpretMetrics(): InterpretMetricsSample[] {
+  try {
+    const raw = sessionStorage.getItem(METRICS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as InterpretMetricsSample[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function clearInterpretMetrics(): void {
+  sessionStorage.removeItem(METRICS_STORAGE_KEY);
+}
 
 export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
+  termLock?: TermLockMap,
 ): Promise<InterpretResult> {
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
   if (meetingContext?.trim()) {
     headers['X-Meeting-Context'] = encodeURIComponent(meetingContext.trim());
+  }
+  if (termLock && Object.keys(termLock).length > 0) {
+    headers['X-Term-Lock'] = encodeURIComponent(JSON.stringify(termLock));
   }
   const body = audioPcm16khz.slice(0);
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;

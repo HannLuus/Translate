@@ -7,25 +7,18 @@ import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
 import { getCaptureStream, captureAudioChunks } from './audioCapture';
-import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize } from './api';
+import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize, appendInterpretMetrics, getInterpretMetrics, clearInterpretMetrics } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
-import type { CaptureMode, PermissionState, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
+import { extractNewSuffix, isDuplicateSegment } from './textMerge';
+import type { CaptureMode, PermissionState, TermLockMap, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
 import './App.css';
 
-/**
- * True if the new line is too similar to the immediately previous line.
- * With pause-based chunking each chunk is a distinct utterance, so a
- * simple Jaccard check against the last line is all that is needed.
- */
-function isDuplicate(candidate: string, lastLine: string): boolean {
-  const tok = (s: string) =>
-    new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean));
-  const a = tok(candidate);
-  const b = tok(lastLine);
-  if (a.size === 0 || b.size === 0) return false;
-  let intersection = 0;
-  a.forEach((w) => { if (b.has(w)) intersection++; });
-  return intersection / new Set([...a, ...b]).size >= 0.65;
+function mergeSegmentText(candidate: string, lastLine: string): string | null {
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+  if (!lastLine.trim()) return trimmed;
+  if (isDuplicateSegment(trimmed, lastLine)) return null;
+  return extractNewSuffix(trimmed, lastLine);
 }
 
 const MODE_STORAGE_KEY = 'interpreter-capture-mode';
@@ -137,6 +130,7 @@ function App() {
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   /** Last 2–3 translation segments for continuity (sent to backend). */
   const recentContextRef = useRef<string>('');
+  const termLockRef = useRef<TermLockMap>({});
 
   useEffect(() => {
     checkPermissions().then(setPermissionState);
@@ -213,6 +207,8 @@ function App() {
     try {
       setTranslationSegments([]);
       recentContextRef.current = '';
+      termLockRef.current = {};
+      clearInterpretMetrics();
       const stream = await getCaptureStream(
         mode,
         mode === 'rooted_android' ? loopbackDeviceId.trim() || undefined : undefined
@@ -232,14 +228,18 @@ function App() {
           while (interpretQueueRef.current.length > 0) {
             const pcm = interpretQueueRef.current.shift()!;
             try {
-              const result = await interpretAudio(pcm, combinedContext || undefined);
+              const result = await interpretAudio(pcm, combinedContext || undefined, termLockRef.current);
+              if (result.termLock) termLockRef.current = result.termLock;
+              if (result.diagnostics) appendInterpretMetrics(result.diagnostics);
+
               const englishLine = result.englishText ?? '';
               if (englishLine) {
                 setTranslationSegments((prev) => {
                   const lastText = prev[prev.length - 1]?.text ?? '';
-                  if (isDuplicate(englishLine, lastText)) return prev;
+                  const merged = mergeSegmentText(englishLine, lastText);
+                  if (!merged) return prev;
                   const ctx = recentContextRef.current;
-                  recentContextRef.current = (ctx ? ctx + '\n' + englishLine : englishLine)
+                  recentContextRef.current = (ctx ? ctx + '\n' + merged : merged)
                     .split('\n')
                     .filter(Boolean)
                     .slice(-2)
@@ -248,7 +248,7 @@ function App() {
                     ...prev,
                     {
                       id: ++segmentIdRef.current,
-                      text: englishLine,
+                      text: merged,
                       shownAt: Date.now(),
                       burmeseText: result.burmeseText?.trim() || undefined,
                     },
@@ -275,6 +275,7 @@ function App() {
         interpretQueueRef.current = [];
         interpretDrainingRef.current = false;
         recentContextRef.current = '';
+        termLockRef.current = {};
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();
           currentTtsRef.current = null;
@@ -306,6 +307,28 @@ function App() {
       ...prev,
       { id: ++segmentIdRef.current, text: toShow, shownAt: Date.now() },
     ]);
+  }, []);
+
+  const downloadMetricsLog = useCallback(() => {
+    const samples = getInterpretMetrics();
+    const lines: string[] = [
+      'Translate app – segment metrics',
+      `Generated: ${new Date().toISOString()}`,
+      `Sample count: ${samples.length}`,
+      '',
+      '--- Samples ---',
+      ...samples.map((s) => JSON.stringify(s)),
+    ];
+    if (samples.length === 0) {
+      lines.push('(No metrics recorded in this session.)');
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `translate-metrics-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   }, []);
 
   const downloadErrorLog = useCallback(() => {
@@ -596,6 +619,14 @@ function App() {
         </div>
 
         <div className="app__error-log">
+          <motion.button
+            type="button"
+            className="app__btn app__btn--error-log"
+            onClick={downloadMetricsLog}
+            whileTap={{ scale: 0.98 }}
+          >
+            Download metrics log
+          </motion.button>
           <motion.button
             type="button"
             className="app__btn app__btn--error-log"

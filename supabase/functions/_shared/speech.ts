@@ -1,23 +1,15 @@
 import { getAccessToken, getProjectId } from './googleAuth.ts';
+import { transcribeBurmeseElevenLabs } from './elevenlabsStt.ts';
 import { buildPhraseHints, parseGlossaryHints, type GlossaryHint } from './terminology.ts';
+import type { SttAlternative, SttResult } from './sttTypes.ts';
+
+export type { SttAlternative, SttResult } from './sttTypes.ts';
 
 const SPEECH_REGION = 'asia-southeast1';
 const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
 
 /** Minimum confidence to skip second-pass STT refinement. */
 export const STT_CONFIDENCE_THRESHOLD = 0.72;
-
-export interface SttAlternative {
-  transcript: string;
-  confidence: number;
-}
-
-export interface SttResult {
-  transcript: string;
-  confidence: number;
-  alternatives: SttAlternative[];
-  model: string;
-}
 
 function bytesToBase64(bytes: Uint8Array): string {
   const chunkSize = 8192;
@@ -139,31 +131,62 @@ async function recognizeAudioDetailed(
 export async function transcribeBurmeseDetailed(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
-  options?: { preferredModel?: string },
+  options?: { preferredModel?: string; forceGoogle?: boolean },
 ): Promise<SttResult> {
   if (audioBytes.length < MIN_AUDIO_BYTES) {
     return { transcript: '', confidence: 0, alternatives: [], model: 'none' };
   }
+
   const hints = parseGlossaryHints(meetingContext);
+
+  // Primary path (WhisperWarp-proven): ElevenLabs Scribe for Myanmar Unicode Burmese.
+  if (!options?.forceGoogle && Deno.env.get('ELEVENLABS_API_KEY')) {
+    try {
+      const scribe = await transcribeBurmeseElevenLabs(audioBytes, meetingContext);
+      if (scribe.transcript) return scribe;
+    } catch (err) {
+      console.warn('[STT] ElevenLabs Scribe failed, falling back to Google Chirp:', err);
+    }
+  }
+
   const audioBase64 = bytesToBase64(audioBytes);
   return recognizeAudioDetailed(audioBase64, ['my-MM'], hints, options?.preferredModel);
 }
 
-/** Second-pass refinement: alternate model + phrase hints for low-confidence segments. */
+/** Second-pass refinement: alternate provider/model for low-confidence segments. */
 export async function refineBurmeseTranscription(
   audioBytes: Uint8Array,
   primary: SttResult,
   meetingContext?: string | null,
 ): Promise<SttResult> {
+  const usedElevenLabs = primary.model === 'elevenlabs_scribe';
+
+  if (usedElevenLabs) {
+    const audioBase64 = bytesToBase64(audioBytes);
+    const hints = parseGlossaryHints(meetingContext);
+    const refined = await recognizeAudioDetailed(audioBase64, ['my-MM'], hints, 'chirp_3');
+    if (refined.transcript && refined.confidence >= primary.confidence) return refined;
+    return primary;
+  }
+
+  if (Deno.env.get('ELEVENLABS_API_KEY')) {
+    try {
+      const refined = await transcribeBurmeseElevenLabs(audioBytes, meetingContext);
+      if (refined.transcript && refined.confidence >= primary.confidence) return refined;
+    } catch {
+      // keep primary
+    }
+  }
+
   const alternateModel = primary.model === 'chirp_3' ? 'chirp_2' : 'chirp_3';
   const refined = await transcribeBurmeseDetailed(audioBytes, meetingContext, {
     preferredModel: alternateModel,
+    forceGoogle: true,
   });
 
   if (!refined.transcript) return primary;
   if (refined.confidence >= primary.confidence) return refined;
 
-  // Keep primary transcript but merge confidence if refined has useful alternatives.
   if (refined.alternatives.length > 0 && primary.confidence < STT_CONFIDENCE_THRESHOLD) {
     return {
       ...primary,

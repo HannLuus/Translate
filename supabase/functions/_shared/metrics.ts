@@ -2,7 +2,7 @@
 export interface InterpretDiagnostics {
   latencyMs: number;
   sttConfidence: number | null;
-  sttPath: 'speech_api' | 'speech_api_refined' | 'gemini_audio_fallback';
+  sttPath: 'elevenlabs_scribe' | 'speech_api' | 'speech_api_refined' | 'gemini_audio_fallback';
   fallbackReason: string | null;
   emptyOutput: boolean;
   secondPassUsed: boolean;

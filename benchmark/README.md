@@ -42,6 +42,20 @@ Thresholds are defined in:
 - Backend: [`supabase/functions/_shared/metrics.ts`](../supabase/functions/_shared/metrics.ts)
 - Eval script: [`scripts/eval-release-gates.mjs`](../scripts/eval-release-gates.mjs)
 
+## Burmese STT (WhisperWarp-aligned)
+
+Primary Burmese transcription uses **ElevenLabs Scribe v2** (same approach as WhisperWarp), with Google Chirp as fallback.
+
+Edge Function secrets:
+
+```bash
+ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_STT_MODEL=scribe_v2
+ELEVENLABS_MYANMAR_KEYTERMS=မြန်မာ,ရန်ကုန်
+```
+
+Without `ELEVENLABS_API_KEY`, the pipeline falls back to Google Speech-to-Text Chirp (`my-MM`).
+
 ## 3) Rollout flags
 
 Frontend capture flags (localStorage):

@@ -1,6 +1,10 @@
 export type CaptureMode = 'desktop' | 'rooted_android' | 'face_to_face';
 
-export type SttPath = 'speech_api' | 'speech_api_refined' | 'gemini_audio_fallback';
+export type SttPath =
+  | 'elevenlabs_scribe'
+  | 'speech_api'
+  | 'speech_api_refined'
+  | 'gemini_audio_fallback';
 
 export interface InterpretDiagnostics {
   latencyMs: number;

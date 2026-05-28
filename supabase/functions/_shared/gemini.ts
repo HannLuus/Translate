@@ -384,21 +384,18 @@ export async function transcribeAndTranslateAudio(
     }
   }
 
-  try {
-    const fallback = await runGeminiAudioFallback(audioBytes, meetingContext);
-    return {
-      ...fallback,
-      termLock,
-      diagnostics: {
-        sttConfidence: null,
-        sttPath: 'gemini_audio_fallback',
-        fallbackReason: 'empty_stt_transcript',
-        secondPassUsed: false,
-      },
-    };
-  } catch (err) {
-    throw err;
-  }
+  // STT succeeded but found no speech — do not run Gemini audio (it hallucinates on silence/noise).
+  return {
+    burmeseText: '',
+    englishText: '',
+    termLock,
+    diagnostics: {
+      sttConfidence: 0,
+      sttPath: 'speech_api',
+      fallbackReason: 'empty_stt_transcript',
+      secondPassUsed: false,
+    },
+  };
 }
 
 const CLEAN_AND_SUMMARIZE_SYSTEM =

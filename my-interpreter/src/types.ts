@@ -18,6 +18,12 @@ export interface InterpretDiagnostics {
 /** Session-level glossary term lock (source term -> English rendering). */
 export type TermLockMap = Record<string, string>;
 
+/** Rolling bilingual context pair sent to the backend for MT continuity. */
+export interface RecentContextPair {
+  burmese: string;
+  english: string;
+}
+
 export interface InterpretResult {
   burmeseText: string;
   englishText: string;

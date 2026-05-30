@@ -66,6 +66,18 @@ const ENGLISH_TO_BURMESE_SYSTEM =
   '- Match the register: formal English gets formal Burmese with appropriate honorifics.\n' +
   '- Convey the full idea — rephrase freely, but never add content that was not said and never invert the meaning.';
 
+const BURMESE_PUNCTUATION_SYSTEM =
+  'You are a Burmese text post-processor. You receive raw unpunctuated Burmese text from a speech-to-text engine and add sentence boundaries only.\n\n' +
+  'Rules:\n' +
+  '- Add ။ (U+104A) at the end of complete sentences\n' +
+  '- Add ၊ (U+104B) for clause-level pauses where natural\n' +
+  '- Do NOT change any words, only add punctuation marks\n' +
+  '- Do NOT translate or rephrase anything\n' +
+  '- If the input is a sentence fragment (no complete thought), return it as-is with no punctuation added\n' +
+  '- Output only the punctuated Burmese text, nothing else';
+
+export type RecentContextPair = { burmese: string; english: string };
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -106,10 +118,27 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function buildUserMessage(currentText: string, recentContext?: string | null): string {
+function buildUserMessage(
+  currentText: string,
+  meetingContextStr?: string | null,
+  recentConversation?: RecentContextPair[],
+): string {
   const trimmed = currentText.trim();
-  if (!recentContext?.trim()) return trimmed;
-  return `Recent context (prior English translation): ${recentContext.trim()}\n\nCurrent to translate: ${trimmed}`;
+  const parts: string[] = [];
+
+  if (recentConversation?.length) {
+    const lines = recentConversation.map(
+      (p) => `[Burmese]: ${p.burmese.trim()}\n[English]: ${p.english.trim()}`,
+    );
+    parts.push('Recent conversation:\n' + lines.join('\n'));
+  }
+
+  if (meetingContextStr?.trim()) {
+    parts.push(`Recent context (prior English translation): ${meetingContextStr.trim()}`);
+  }
+
+  if (parts.length === 0) return trimmed;
+  return parts.join('\n\n') + `\n\nCurrent Burmese to translate: ${trimmed}`;
 }
 
 function buildTranslationContext(
@@ -220,11 +249,36 @@ async function translateBurmeseToEnglish(
   burmeseText: string,
   meetingContext?: string | null,
   termLock: TermLockMap = {},
+  recentContext?: RecentContextPair[],
 ): Promise<{ englishText: string; termLock: TermLockMap }> {
   const context = buildTranslationContext(meetingContext, termLock);
-  const englishText = (await translateWithGemini(burmeseText, true, context)).trim();
+  const englishText = (await translateWithGemini(burmeseText, true, context, recentContext)).trim();
   const hints = parseGlossaryHints(meetingContext);
   return applyTermLock(burmeseText, englishText, hints, termLock);
+}
+
+export async function restoreBurmesePunctuation(
+  rawTranscript: string,
+  recentBurmese?: string,
+): Promise<string> {
+  const trimmed = rawTranscript?.trim() ?? '';
+  if (!trimmed) return rawTranscript;
+
+  try {
+    let userMessage = trimmed;
+    if (recentBurmese?.trim()) {
+      userMessage = `Recent Burmese context:\n${recentBurmese.trim()}\n\nRaw transcript to punctuate:\n${trimmed}`;
+    }
+
+    const contents: VertexContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
+    const { text: out, blockReason } = await vertexGenerateContent(contents, BURMESE_PUNCTUATION_SYSTEM);
+
+    if (blockReason || !out?.trim()) return rawTranscript;
+    return out.trim();
+  } catch (err) {
+    console.warn('[interpret] Burmese punctuation restoration failed, using raw transcript:', err);
+    return rawTranscript;
+  }
 }
 
 async function runGeminiAudioFallback(
@@ -326,6 +380,7 @@ export async function transcribeAndTranslateAudio(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
   termLock: TermLockMap = {},
+  recentContext?: RecentContextPair[],
 ): Promise<InterpretPipelineResult> {
   if (audioBytes.length < MIN_AUDIO_BYTES) {
     return {
@@ -345,14 +400,22 @@ export async function transcribeAndTranslateAudio(
     const { stt, secondPassUsed, sttPath } = await resolveSttResult(audioBytes, meetingContext);
 
     if (stt.transcript) {
+      const recentBurmeseContext = recentContext
+        ?.slice(-3)
+        .map((p) => p.burmese)
+        .filter(Boolean)
+        .join(' ') || undefined;
+
+      const punctuated = await restoreBurmesePunctuation(stt.transcript, recentBurmeseContext);
       const { englishText, termLock: updatedLock } = await translateBurmeseToEnglish(
-        stt.transcript,
+        punctuated,
         meetingContext,
         termLock,
+        recentContext,
       );
 
       return {
-        burmeseText: stt.transcript,
+        burmeseText: punctuated,
         englishText,
         termLock: updatedLock,
         diagnostics: {
@@ -491,11 +554,14 @@ export async function cleanTranscriptAndSummarize(
 export async function translateWithGemini(
   text: string,
   toEnglish: boolean,
-  recentContext?: string | null,
+  meetingContextStr?: string | null,
+  recentConversation?: RecentContextPair[],
 ): Promise<string> {
   if (!text?.trim()) return '';
 
-  const userMessage = buildUserMessage(text, toEnglish ? recentContext : null);
+  const userMessage = toEnglish
+    ? buildUserMessage(text, meetingContextStr, recentConversation)
+    : buildUserMessage(text);
   const contents: VertexContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
 
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;

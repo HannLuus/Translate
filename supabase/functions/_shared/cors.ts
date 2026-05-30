@@ -2,7 +2,7 @@ export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers':
     'authorization, x-client-info, x-client-id, apikey, content-type, accept, ' +
-    'x-supabase-api-version, x-translation-context, x-meeting-context, x-term-lock',
+    'x-supabase-api-version, x-translation-context, x-meeting-context, x-term-lock, x-recent-context',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 

@@ -19,6 +19,34 @@ function parseTermLockHeader(raw: string | null): TermLockMap {
   }
 }
 
+type RecentContextPair = { burmese: string; english: string };
+
+function parseRecentContextHeader(raw: string | null): RecentContextPair[] {
+  if (!raw?.trim()) return [];
+  try {
+    const decoded = decodeURIComponent(raw);
+    const parsed = JSON.parse(decoded) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const pairs: RecentContextPair[] = [];
+    for (const item of parsed) {
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof (item as RecentContextPair).burmese === 'string' &&
+        typeof (item as RecentContextPair).english === 'string'
+      ) {
+        pairs.push({
+          burmese: (item as RecentContextPair).burmese,
+          english: (item as RecentContextPair).english,
+        });
+      }
+    }
+    return pairs;
+  } catch {
+    return [];
+  }
+}
+
 Deno.serve(async (req) => {
   const cors = handleCors(req);
   if (cors) return cors;
@@ -47,7 +75,12 @@ Deno.serve(async (req) => {
     }
 
     const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock } =
-      await transcribeAndTranslateAudio(audioBytes, meetingContext, parseTermLockHeader(req.headers.get('x-term-lock')));
+      await transcribeAndTranslateAudio(
+        audioBytes,
+        meetingContext,
+        parseTermLockHeader(req.headers.get('x-term-lock')),
+        parseRecentContextHeader(req.headers.get('x-recent-context')),
+      );
 
     const diagnostics = createDiagnostics(startedAt, partialDiagnostics, burmeseText, englishText);
     logInterpretMetrics(diagnostics);

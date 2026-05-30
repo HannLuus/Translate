@@ -10,8 +10,19 @@ import { getCaptureStream, captureAudioChunks } from './audioCapture';
 import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize, appendInterpretMetrics, getInterpretMetrics, clearInterpretMetrics } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import { extractNewSuffix, isDuplicateSegment } from './textMerge';
-import type { CaptureMode, PermissionState, TermLockMap, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
+import type { CaptureMode, PermissionState, RecentContextPair, TermLockMap, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
 import './App.css';
+
+function mergeBufferedEnglish(lines: string[]): string {
+  let merged = '';
+  for (const line of lines) {
+    const next = mergeSegmentText(line, merged);
+    if (next) merged = merged ? merged + ' ' + next : next;
+  }
+  return merged;
+}
+
+const SENTENCE_END = /[။?!.]\s*$/;
 
 function mergeSegmentText(candidate: string, lastLine: string): string | null {
   const trimmed = candidate.trim();
@@ -128,8 +139,12 @@ function App() {
   const interpretQueueRef = useRef<ArrayBuffer[]>([]);
   const interpretDrainingRef = useRef(false);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
-  /** Last 2–3 translation segments for continuity (sent to backend). */
-  const recentContextRef = useRef<string>('');
+  /** Last 6 bilingual pairs for MT continuity (sent to backend on flush). */
+  const recentContextRef = useRef<RecentContextPair[]>([]);
+  const burmeseBufferRef = useRef('');
+  const englishBufferRef = useRef<string[]>([]);
+  const bufferStartTimeRef = useRef(0);
+  const lastAudioBase64Ref = useRef<string | null>(null);
   const termLockRef = useRef<TermLockMap>({});
 
   useEffect(() => {
@@ -206,7 +221,11 @@ function App() {
     }
     try {
       setTranslationSegments([]);
-      recentContextRef.current = '';
+      recentContextRef.current = [];
+      burmeseBufferRef.current = '';
+      englishBufferRef.current = [];
+      bufferStartTimeRef.current = 0;
+      lastAudioBase64Ref.current = null;
       termLockRef.current = {};
       clearInterpretMetrics();
       const stream = await getCaptureStream(
@@ -218,6 +237,47 @@ function App() {
       setInterpretStatus('listening');
       await requestWakeLock();
 
+        const flushInterpretBuffer = (playTtsOnFlush: boolean) => {
+          const fullBuffer = burmeseBufferRef.current.trim();
+          const englishLines = englishBufferRef.current;
+          if (!fullBuffer && englishLines.length === 0) return;
+
+          const mergedEnglish = mergeBufferedEnglish(englishLines);
+          const audioBase64 = lastAudioBase64Ref.current;
+
+          burmeseBufferRef.current = '';
+          englishBufferRef.current = [];
+          bufferStartTimeRef.current = 0;
+          lastAudioBase64Ref.current = null;
+
+          if (!mergedEnglish && !fullBuffer) return;
+
+          if (mergedEnglish) {
+            setTranslationSegments((prev) => {
+              const lastText = prev[prev.length - 1]?.text ?? '';
+              const displayEnglish = mergeSegmentText(mergedEnglish, lastText);
+              if (!displayEnglish) return prev;
+
+              recentContextRef.current = [
+                ...recentContextRef.current,
+                { burmese: fullBuffer, english: mergedEnglish },
+              ].slice(-6);
+
+              return [
+                ...prev,
+                {
+                  id: ++segmentIdRef.current,
+                  text: displayEnglish,
+                  shownAt: Date.now(),
+                  burmeseText: fullBuffer || undefined,
+                },
+              ];
+            });
+          }
+
+          if (playTtsOnFlush && playTtsEnabled && audioBase64) playTts(audioBase64);
+        };
+
         const drainInterpretQueue = async () => {
           if (interpretDrainingRef.current) return;
           interpretDrainingRef.current = true;
@@ -228,34 +288,30 @@ function App() {
           while (interpretQueueRef.current.length > 0) {
             const pcm = interpretQueueRef.current.shift()!;
             try {
-              const result = await interpretAudio(pcm, combinedContext || undefined, termLockRef.current);
+              const result = await interpretAudio(
+                pcm,
+                combinedContext || undefined,
+                termLockRef.current,
+                recentContextRef.current,
+              );
               if (result.termLock) termLockRef.current = result.termLock;
               if (result.diagnostics) appendInterpretMetrics(result.diagnostics);
 
-              const englishLine = result.englishText ?? '';
-              if (englishLine) {
-                setTranslationSegments((prev) => {
-                  const lastText = prev[prev.length - 1]?.text ?? '';
-                  const merged = mergeSegmentText(englishLine, lastText);
-                  if (!merged) return prev;
-                  const ctx = recentContextRef.current;
-                  recentContextRef.current = (ctx ? ctx + '\n' + merged : merged)
-                    .split('\n')
-                    .filter(Boolean)
-                    .slice(-2)
-                    .join('\n');
-                  return [
-                    ...prev,
-                    {
-                      id: ++segmentIdRef.current,
-                      text: merged,
-                      shownAt: Date.now(),
-                      burmeseText: result.burmeseText?.trim() || undefined,
-                    },
-                  ];
-                });
-              }
-              if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
+              const burmeseChunk = result.burmeseText?.trim() ?? '';
+              const englishLine = result.englishText?.trim() ?? '';
+              if (!burmeseChunk && !englishLine) continue;
+
+              const wasEmpty = !burmeseBufferRef.current && englishBufferRef.current.length === 0;
+              if (burmeseChunk) burmeseBufferRef.current += burmeseChunk;
+              if (englishLine) englishBufferRef.current.push(englishLine);
+              if (result.audioBase64) lastAudioBase64Ref.current = result.audioBase64;
+              if (wasEmpty) bufferStartTimeRef.current = Date.now();
+
+              const shouldFlush =
+                SENTENCE_END.test(burmeseBufferRef.current) ||
+                (bufferStartTimeRef.current > 0 && Date.now() - bufferStartTimeRef.current > 4000);
+
+              if (shouldFlush) flushInterpretBuffer(true);
             } catch (e) {
               const msg = e instanceof Error ? e.message : 'Interpret failed';
               setError(msg);
@@ -271,10 +327,15 @@ function App() {
           void drainInterpretQueue();
         });
       stopCaptureRef.current = () => {
+        flushInterpretBuffer(true);
         stop();
         interpretQueueRef.current = [];
         interpretDrainingRef.current = false;
-        recentContextRef.current = '';
+        recentContextRef.current = [];
+        burmeseBufferRef.current = '';
+        englishBufferRef.current = [];
+        bufferStartTimeRef.current = 0;
+        lastAudioBase64Ref.current = null;
         termLockRef.current = {};
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();

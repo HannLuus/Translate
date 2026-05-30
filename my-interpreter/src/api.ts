@@ -1,4 +1,4 @@
-import type { CleanSummarizeResult, InterpretDiagnostics, InterpretResult, ResponseResult, TermLockMap } from './types';
+import type { CleanSummarizeResult, InterpretDiagnostics, InterpretResult, RecentContextPair, ResponseResult, TermLockMap } from './types';
 
 /**
  * Supabase Edge Functions base URL.
@@ -150,6 +150,7 @@ export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
   termLock?: TermLockMap,
+  recentContext?: RecentContextPair[],
 ): Promise<InterpretResult> {
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
   if (meetingContext?.trim()) {
@@ -157,6 +158,9 @@ export async function interpretAudio(
   }
   if (termLock && Object.keys(termLock).length > 0) {
     headers['X-Term-Lock'] = encodeURIComponent(JSON.stringify(termLock));
+  }
+  if (recentContext?.length) {
+    headers['X-Recent-Context'] = encodeURIComponent(JSON.stringify(recentContext));
   }
   const body = audioPcm16khz.slice(0);
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;

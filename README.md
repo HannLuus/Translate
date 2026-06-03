@@ -33,12 +33,29 @@ In **Rooted Android** mode the app captures audio from a **system loopback** dev
 
 In the app, open the **Loopback device ID** field (shown when Rooted Android is selected) and paste or select that device ID. The app will then use `getUserMedia({ audio: { deviceId: { exact: id } } })` to capture from that device.
 
-## Deploy (Supabase backend)
+## Deploy (production VPS)
 
-The backend runs as **Supabase Edge Functions** (see `supabase/functions/`). Pushing to `main` triggers a GitHub Action that runs `supabase functions deploy`, so the live API updates within seconds.
+Production API: **https://translate.lucas-dev-server.tech/functions/v1** (self-hosted Supabase edge functions on VPS).
 
-- **Auto-deploy:** Push to `main`; the workflow `.github/workflows/deploy-supabase.yml` deploys all Edge Functions.
-- **Manual:** From the repo root run `supabase functions deploy --project-ref hbeixuedkdugfrpwpdph --no-verify-jwt`.
+### Primary: SSH deploy to VPS
+
+Edge function code lives in `supabase/functions/` and is loaded from `/home/deno/functions/{name}` on the VPS.
+
+```bash
+export TRANSLATE_VPS_HOST=user@translate.lucas-dev-server.tech
+export TRANSLATE_VPS_SSH_KEY=~/.ssh/hetzner_vps   # optional
+./scripts/deploy-vps.sh
+```
+
+Verification: `./scripts/verify-vps-deploy.sh`
+
+**CORS note:** Browser preflight is handled by **Kong** on the VPS, not only `cors.ts` in edge functions. If a new custom header is blocked (e.g. `x-recent-context`), update Kong — see `scripts/patch-kong-cors-on-vps.sh` — then redeploy functions.
+
+### Secondary: GitHub → Supabase Cloud (may not update VPS)
+
+Pushing to `main` triggers `.github/workflows/deploy-supabase.yml`. This deploys to Supabase Cloud and **does not** update the self-hosted VPS unless separately wired. If the workflow fails with `401 Unauthorized`, refresh the `SUPABASE_ACCESS_TOKEN` GitHub secret.
+
+Legacy manual Cloud deploy: `supabase functions deploy --project-ref hbeixuedkdugfrpwpdph --no-verify-jwt`
 
 Backend URL and anon key are defined in `my-interpreter/src/api.ts`; override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel if needed.
 

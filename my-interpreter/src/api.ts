@@ -146,6 +146,23 @@ export function clearInterpretMetrics(): void {
   sessionStorage.removeItem(METRICS_STORAGE_KEY);
 }
 
+/**
+ * Production Kong on the VPS allows x-meeting-context but not yet x-recent-context.
+ * Fold recent dialogue into meeting context until Kong is patched (see scripts/patch-kong-cors-on-vps.sh).
+ */
+function meetingContextWithRecent(
+  meetingContext?: string | null,
+  recentContext?: RecentContextPair[],
+): string | null {
+  const base = meetingContext?.trim() ?? '';
+  if (!recentContext?.length) return base || null;
+  const lines = recentContext.map(
+    (p) => `[Burmese]: ${p.burmese.trim()}\n[English]: ${p.english.trim()}`,
+  );
+  const block = `Recent conversation:\n${lines.join('\n')}`;
+  return base ? `${base}\n\n${block}` : block;
+}
+
 export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
@@ -153,14 +170,12 @@ export async function interpretAudio(
   recentContext?: RecentContextPair[],
 ): Promise<InterpretResult> {
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
-  if (meetingContext?.trim()) {
-    headers['X-Meeting-Context'] = encodeURIComponent(meetingContext.trim());
+  const meetingPayload = meetingContextWithRecent(meetingContext, recentContext);
+  if (meetingPayload) {
+    headers['X-Meeting-Context'] = encodeURIComponent(meetingPayload);
   }
   if (termLock && Object.keys(termLock).length > 0) {
     headers['X-Term-Lock'] = encodeURIComponent(JSON.stringify(termLock));
-  }
-  if (recentContext?.length) {
-    headers['X-Recent-Context'] = encodeURIComponent(JSON.stringify(recentContext));
   }
   const body = audioPcm16khz.slice(0);
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;

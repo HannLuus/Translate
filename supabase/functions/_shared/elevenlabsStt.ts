@@ -44,7 +44,12 @@ function buildKeyterms(meetingContext?: string | null): string[] {
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
-  return [...new Set([...fromGlossary, ...envTerms])].slice(0, 100);
+  // ElevenLabs keyterms only accept ASCII/Latin characters — filter out
+  // Burmese and other non-Latin scripts to avoid "invalid characters" errors.
+  const latinOnly = (t: string) => /^[\x00-\x7F\s]+$/.test(t);
+  return [...new Set([...fromGlossary, ...envTerms])]
+    .filter(latinOnly)
+    .slice(0, 100);
 }
 
 /**

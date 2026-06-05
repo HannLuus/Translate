@@ -58,10 +58,12 @@ Deno.serve(async (req) => {
     const audioBytes = new Uint8Array(arrayBuffer);
 
     if (!audioBytes.length) {
-      return new Response(JSON.stringify({ error: 'Request body must be raw audio bytes' }), {
-        status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      // Silent / empty capture window (common in desktop audio mode during pauses).
+      // Treat as a graceful no-op rather than a 400 so it doesn't spam the console.
+      return new Response(
+        JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null, diagnostics: null, termLock: {} }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
     }
 
     const meetingContextRaw = req.headers.get('x-meeting-context');

@@ -4,10 +4,29 @@ import { createDiagnostics, logInterpretMetrics } from '../_shared/metrics.ts';
 import { synthesizeSpeech } from '../_shared/tts.ts';
 import type { TermLockMap } from '../_shared/terminology.ts';
 
-function parseTermLockHeader(raw: string | null): TermLockMap {
-  if (!raw?.trim()) return {};
+function decodeBase64Header(raw: string | null): string | null {
+  if (!raw?.trim()) return null;
   try {
-    const decoded = decodeURIComponent(raw);
+    // Try base64 decode first (new format)
+    const binary = atob(raw);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  } catch {
+    // Fall back to legacy URI-encoded format
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+}
+
+function parseTermLockHeader(raw: string | null): TermLockMap {
+  const decoded = decodeBase64Header(raw);
+  if (!decoded) return {};
+
+  try {
     const parsed = JSON.parse(decoded) as Record<string, unknown>;
     const lock: TermLockMap = {};
     for (const [k, v] of Object.entries(parsed)) {
@@ -22,9 +41,10 @@ function parseTermLockHeader(raw: string | null): TermLockMap {
 type RecentContextPair = { burmese: string; english: string };
 
 function parseRecentContextHeader(raw: string | null): RecentContextPair[] {
-  if (!raw?.trim()) return [];
+  const decoded = decodeBase64Header(raw);
+  if (!decoded) return [];
+
   try {
-    const decoded = decodeURIComponent(raw);
     const parsed = JSON.parse(decoded) as unknown;
     if (!Array.isArray(parsed)) return [];
     const pairs: RecentContextPair[] = [];
@@ -67,14 +87,7 @@ Deno.serve(async (req) => {
     }
 
     const meetingContextRaw = req.headers.get('x-meeting-context');
-    let meetingContext: string | null = null;
-    if (meetingContextRaw) {
-      try {
-        meetingContext = decodeURIComponent(meetingContextRaw);
-      } catch {
-        meetingContext = meetingContextRaw;
-      }
-    }
+    const meetingContext = decodeBase64Header(meetingContextRaw);
 
     const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock } =
       await transcribeAndTranslateAudio(

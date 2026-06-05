@@ -172,10 +172,10 @@ export async function interpretAudio(
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
   const meetingPayload = meetingContextWithRecent(meetingContext, recentContext);
   if (meetingPayload) {
-    headers['X-Meeting-Context'] = encodeURIComponent(meetingPayload);
+    headers['X-Meeting-Context'] = btoa(unescape(encodeURIComponent(meetingPayload)));
   }
   if (termLock && Object.keys(termLock).length > 0) {
-    headers['X-Term-Lock'] = encodeURIComponent(JSON.stringify(termLock));
+    headers['X-Term-Lock'] = btoa(unescape(encodeURIComponent(JSON.stringify(termLock))));
   }
   const body = audioPcm16khz.slice(0);
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;

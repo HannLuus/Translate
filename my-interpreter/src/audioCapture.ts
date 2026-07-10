@@ -21,7 +21,8 @@ const SPEECH_MARGIN = 0.006;
 
 const PAUSE_GAP_MS = 600;
 const MIN_SPEECH_MS = 800;
-const MAX_SPEECH_MS = 20000;
+/** Keep chunks short so STT + translation stays under gateway timeouts. */
+const MAX_SPEECH_MS = 8000;
 /** Overlap tail prepended to next chunk to avoid word loss at boundaries. */
 const OVERLAP_MS = 350;
 

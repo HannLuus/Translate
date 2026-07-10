@@ -27,7 +27,9 @@ Deno.serve(async (req) => {
     }
 
     const burmeseText = await translateWithGemini(englishText, false);
-    const audioBase64 = await synthesizeSpeech(burmeseText, 'my-MM');
+
+    const skipTts = req.headers.get('x-skip-tts') === '1';
+    const audioBase64 = skipTts ? null : await synthesizeSpeech(burmeseText, 'my-MM');
 
     return new Response(
       JSON.stringify({ englishText, burmeseText, audioBase64 }),

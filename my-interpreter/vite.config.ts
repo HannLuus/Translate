@@ -32,6 +32,8 @@ export default defineConfig({
       '/functions/v1': {
         target: 'https://translate.lucas-dev-server.tech',
         changeOrigin: true,
+        timeout: 120_000,
+        proxyTimeout: 120_000,
       },
     },
   },

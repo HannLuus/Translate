@@ -373,6 +373,8 @@ verify_jwt = false
 verify_jwt = false
 [functions.response-audio]
 verify_jwt = false
+[functions.clean-and-summarize]
+verify_jwt = false
 
 [analytics]
 enabled = true

@@ -35,6 +35,12 @@ function isSecondPassRefineEnabled(): boolean {
   return flag !== '0';
 }
 
+function isPunctuationRestoreEnabled(audioBytes: Uint8Array): boolean {
+  if (Deno.env.get('SKIP_PUNCTUATION') === '1') return false;
+  const maxBytes = 16000 * 6 * 2;
+  return audioBytes.length <= maxBytes;
+}
+
 // ---------------------------------------------------------------------------
 // System instructions
 // ---------------------------------------------------------------------------
@@ -359,11 +365,13 @@ async function resolveSttResult(
   const routingEnabled = isConfidenceRoutingEnabled();
   const refineEnabled = isSecondPassRefineEnabled();
 
+  const longClipBytes = 16000 * 10 * 2;
   if (
     routingEnabled &&
     refineEnabled &&
     stt.transcript &&
-    stt.confidence < STT_CONFIDENCE_THRESHOLD
+    stt.confidence < STT_CONFIDENCE_THRESHOLD &&
+    audioBytes.length <= longClipBytes
   ) {
     stt = await refineBurmeseTranscription(audioBytes, stt, meetingContext);
     secondPassUsed = true;
@@ -406,7 +414,9 @@ export async function transcribeAndTranslateAudio(
         .filter(Boolean)
         .join(' ') || undefined;
 
-      const punctuated = await restoreBurmesePunctuation(stt.transcript, recentBurmeseContext);
+      const punctuated = isPunctuationRestoreEnabled(audioBytes)
+        ? await restoreBurmesePunctuation(stt.transcript, recentBurmeseContext)
+        : stt.transcript;
       const { englishText, termLock: updatedLock } = await translateBurmeseToEnglish(
         punctuated,
         meetingContext,

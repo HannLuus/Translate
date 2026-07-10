@@ -54,6 +54,9 @@ function formatApiErrorMessage(status: number, raw: string, fallback: string): s
   } catch {
     if (raw.trim()) msg = raw.trim();
   }
+  if (status === 504) {
+    return `Request timed out (504). The server took too long — try shorter phrases, or enable "Play translation aloud" only when needed. ${msg}`;
+  }
   if (status === 503 || /VERTEX_AI|GOOGLE_APPLICATION|quota|billing/i.test(msg)) {
     return `AI backend unavailable (${status}): ${msg}`;
   }
@@ -88,10 +91,10 @@ function isNetworkError(e: unknown): boolean {
   return /failed to fetch|network|connection closed|ERR_CONNECTION/i.test(msg);
 }
 
-/** 503 or quota/rate limit — backend may succeed after a short wait (long meetings). */
+/** 503/504 or quota/rate limit — backend may succeed after a short wait (long meetings). */
 function isRetryableInterpretError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  return /503|429|quota|Quota exceeded|rate limit|free_tier|billing/i.test(msg);
+  return /503|504|429|quota|Quota exceeded|rate limit|free_tier|billing|timed out/i.test(msg);
 }
 
 function delay(ms: number): Promise<void> {
@@ -146,13 +149,22 @@ export function clearInterpretMetrics(): void {
   sessionStorage.removeItem(METRICS_STORAGE_KEY);
 }
 
+export interface InterpretAudioOptions {
+  /** When false, skip server-side English TTS to reduce latency (default: skip). */
+  requestTts?: boolean;
+}
+
 export async function interpretAudio(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
   termLock?: TermLockMap,
   recentContext?: RecentContextPair[],
+  options?: InterpretAudioOptions,
 ): Promise<InterpretResult> {
   const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
+  if (!options?.requestTts) {
+    headers['X-Skip-Tts'] = '1';
+  }
   if (meetingContext?.trim()) {
     headers['X-Meeting-Context'] = encodeURIComponent(meetingContext.trim());
   }
@@ -230,12 +242,19 @@ export interface ResponseAudioResult {
   audioBase64: string | null;
 }
 
-export async function responseAudio(pcm16khz: ArrayBuffer): Promise<ResponseAudioResult> {
+export async function responseAudio(
+  pcm16khz: ArrayBuffer,
+  options?: { requestTts?: boolean },
+): Promise<ResponseAudioResult> {
+  const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
+  if (!options?.requestTts) {
+    headers['X-Skip-Tts'] = '1';
+  }
   const res = await fetchWithTimeout(
     `${API_BASE}/response-audio`,
     {
       method: 'POST',
-      headers: baseHeaders({ 'Content-Type': 'application/octet-stream' }),
+      headers,
       body: pcm16khz.slice(0),
     },
     FETCH_TIMEOUT_MS.default,

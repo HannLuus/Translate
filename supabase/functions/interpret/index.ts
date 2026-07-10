@@ -92,11 +92,17 @@ Deno.serve(async (req) => {
       );
     }
 
+    const skipTts =
+      req.headers.get('x-skip-tts') === '1' ||
+      Deno.env.get('SKIP_INTERPRET_TTS') === '1';
+
     let audioBase64: string | null = null;
-    try {
-      audioBase64 = await synthesizeSpeech(englishText, 'en-US');
-    } catch (ttsErr) {
-      console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
+    if (!skipTts) {
+      try {
+        audioBase64 = await synthesizeSpeech(englishText, 'en-US');
+      } catch (ttsErr) {
+        console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
+      }
     }
 
     return new Response(

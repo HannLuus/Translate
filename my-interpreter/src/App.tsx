@@ -293,6 +293,7 @@ function App() {
                 combinedContext || undefined,
                 termLockRef.current,
                 recentContextRef.current,
+                { requestTts: playTtsEnabled },
               );
               if (result.termLock) termLockRef.current = result.termLock;
               if (result.diagnostics) appendInterpretMetrics(result.diagnostics);

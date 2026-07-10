@@ -99,7 +99,7 @@ export function ResponseButton({
       return;
     }
     setSending(true);
-    responseAudio(pcm)
+    responseAudio(pcm, { requestTts: playTtsEnabled })
       .then((data: ResponseAudioResult) => {
         const burmeseText = data && typeof data.burmeseText === 'string' ? data.burmeseText : '';
         const audioBase64 = data && data.audioBase64 != null ? data.audioBase64 : null;

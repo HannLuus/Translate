@@ -18,6 +18,7 @@ import {
 } from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import { extractNewSuffix, isDuplicateSegment } from './textMerge';
+import { APP_UPDATE_EVENT, getAppBuildTime, getAppVersionLabel } from './appVersion';
 import type {
   CaptureMode,
   PermissionState,
@@ -136,6 +137,15 @@ function App() {
   const [profiles, setProfiles] = useState<ScenarioProfile[]>(loadProfiles);
   const [activeProfileId, setActiveProfileId] = useState<string>(() => loadActiveProfileId(profiles));
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? profiles[0];
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const appVersionLabel = getAppVersionLabel();
+  const appBuildTime = getAppBuildTime();
+
+  useEffect(() => {
+    const onUpdate = () => setUpdateAvailable(true);
+    window.addEventListener(APP_UPDATE_EVENT, onUpdate);
+    return () => window.removeEventListener(APP_UPDATE_EVENT, onUpdate);
+  }, []);
 
   const [useGlossaryAndBriefing, setUseGlossaryAndBriefing] = useState(() => {
     const stored = localStorage.getItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY);
@@ -284,12 +294,15 @@ function App() {
     setTranslationSegments((prev) => {
       const lastText = prev[prev.length - 1]?.text ?? '';
       const displayEnglish = eng ? mergeSegmentText(eng, lastText) : null;
+
+      // mergeSegmentText returns null for empty or duplicate English — never fall back to raw `eng`.
+      if (eng && displayEnglish === null) return prev;
       if (!displayEnglish && !my) return prev;
 
-      if (displayEnglish || eng) {
+      if (displayEnglish) {
         recentContextRef.current = [
           ...recentContextRef.current,
-          { burmese: my, english: eng || displayEnglish || '' },
+          { burmese: my, english: displayEnglish },
         ].slice(-4);
       }
 
@@ -297,7 +310,7 @@ function App() {
         ...prev,
         {
           id: ++segmentIdRef.current,
-          text: displayEnglish || eng || '(Burmese heard; English empty)',
+          text: displayEnglish || '(Burmese heard; English empty)',
           shownAt: Date.now(),
           burmeseText: my || undefined,
           segmentIndex,
@@ -586,8 +599,24 @@ function App() {
 
   return (
     <div className="app">
+      {updateAvailable ? (
+        <div className="app__update-banner" role="status">
+          <span>New app version ready.</span>
+          <button type="button" className="app__update-reload" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </div>
+      ) : null}
       <header className="app__header">
-        <h1 className="app__title">Burmese–English Interpreter</h1>
+        <div className="app__title-row">
+          <h1 className="app__title">Burmese–English Interpreter</h1>
+          <p
+            className="app__version"
+            title={appBuildTime ? `Built ${appBuildTime}` : undefined}
+          >
+            {appVersionLabel}
+          </p>
+        </div>
         <p className="app__backend-status" aria-live="polite">
           {backendStatus === 'ok' && (
             <span className="app__backend-ok">Backend connected</span>

@@ -1,11 +1,16 @@
-name: Deploy Supabase Edge Functions
+name: Deploy Edge Functions (VPS)
 
+# Production API is self-hosted Supabase on the VPS (not Supabase Cloud).
 on:
   push:
     branches:
       - main
     paths:
       - 'supabase/functions/**'
+      - 'scripts/deploy-vps.sh'
+      - 'scripts/patch-kong-timeouts.py'
+      - 'scripts/verify-vps-deploy.sh'
+      - '.github/workflows/deploy-supabase.yml'
   workflow_dispatch:
 
 jobs:
@@ -14,11 +19,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-
-      - name: Deploy Edge Functions
-        run: supabase functions deploy --project-ref ${{ secrets.SUPABASE_PROJECT_REF }} --no-verify-jwt
+      - name: Setup SSH
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          TRANSLATE_VPS_SSH_KEY: ${{ secrets.TRANSLATE_VPS_SSH_KEY }}
+          TRANSLATE_VPS_HOST: ${{ secrets.TRANSLATE_VPS_HOST }}
+        run: |
+          test -n "$TRANSLATE_VPS_SSH_KEY" || { echo "Missing secret TRANSLATE_VPS_SSH_KEY"; exit 1; }
+          test -n "$TRANSLATE_VPS_HOST" || { echo "Missing secret TRANSLATE_VPS_HOST (e.g. ubuntu@72.61.208.230)"; exit 1; }
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$TRANSLATE_VPS_SSH_KEY" > ~/.ssh/translate_vps
+          chmod 600 ~/.ssh/translate_vps
+          HOST_ONLY="${TRANSLATE_VPS_HOST#*@}"
+          ssh-keyscan -H "$HOST_ONLY" >> ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy to VPS
+        env:
+          TRANSLATE_VPS_HOST: ${{ secrets.TRANSLATE_VPS_HOST }}
+          TRANSLATE_VPS_SSH_KEY: /home/runner/.ssh/translate_vps
+        run: |
+          chmod +x scripts/deploy-vps.sh scripts/verify-vps-deploy.sh
+          ./scripts/deploy-vps.sh
+          ./scripts/verify-vps-deploy.sh

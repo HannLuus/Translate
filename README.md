@@ -39,25 +39,33 @@ In the app, open the **Loopback device ID** field (shown when Rooted Android is 
 
 Production API: **https://translate.lucas-dev-server.tech/functions/v1** (self-hosted Supabase edge functions on VPS).
 
-### Primary: SSH deploy to VPS
+### Primary: SSH / GitHub Actions → VPS
 
-Edge function code lives in `supabase/functions/` and is loaded from `/home/deno/functions/{name}` on the VPS.
+Edge function source lives in `supabase/functions/`. On the VPS it is bind-mounted into the edge-runtime as `/home/deno/functions` from:
+
+`/root/supabase-translate/volumes/functions`
+
+Manual deploy from a machine with SSH access:
 
 ```bash
-export TRANSLATE_VPS_HOST=user@translate.lucas-dev-server.tech
-export TRANSLATE_VPS_SSH_KEY=~/.ssh/hetzner_vps   # optional
+export TRANSLATE_VPS_HOST=ubuntu@72.61.208.230   # or an SSH config Host alias
+export TRANSLATE_VPS_SSH_KEY=~/.ssh/id_ed25519   # optional if default key works
 ./scripts/deploy-vps.sh
+./scripts/verify-vps-deploy.sh
 ```
 
-Verification: `./scripts/verify-vps-deploy.sh`
+Pushing to `main` (when `supabase/functions/**` changes) runs `.github/workflows/deploy-supabase.yml`, which SSHs to the VPS and runs the same deploy. Required GitHub secrets:
+
+- `TRANSLATE_VPS_HOST` — e.g. `ubuntu@72.61.208.230`
+- `TRANSLATE_VPS_SSH_KEY` — private key whose public half is in `ubuntu` `authorized_keys`
+
+The workflow also raises Kong `functions-v1` timeouts to **300s** if lower (needed for long segment jobs).
 
 **CORS note:** Browser preflight is handled by **Kong** on the VPS, not only `cors.ts` in edge functions. If a new custom header is blocked (e.g. `x-recent-context`), update Kong — see `scripts/patch-kong-cors-on-vps.sh` — then redeploy functions.
 
-### Secondary: GitHub → Supabase Cloud (may not update VPS)
+### Not used for production: Supabase Cloud CLI deploy
 
-Pushing to `main` triggers `.github/workflows/deploy-supabase.yml`. This deploys to Supabase Cloud and **does not** update the self-hosted VPS unless separately wired. If the workflow fails with `401 Unauthorized`, refresh the `SUPABASE_ACCESS_TOKEN` GitHub secret.
-
-Legacy manual Cloud deploy: `supabase functions deploy --project-ref hbeixuedkdugfrpwpdph --no-verify-jwt`
+`supabase functions deploy --project-ref …` targets Supabase Cloud. This app’s production API is the VPS above; Cloud tokens in repo secrets are unused by the VPS workflow.
 
 Backend URL and anon key are defined in `my-interpreter/src/api.ts`; override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel if needed.
 

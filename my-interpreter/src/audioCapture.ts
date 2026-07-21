@@ -11,35 +11,14 @@ const SAMPLE_RATE_CAPTURE = 48000;
 const FRAME_SAMPLES = 4096;
 const FRAME_MS = (FRAME_SAMPLES / SAMPLE_RATE_CAPTURE) * 1000; // ≈ 85 ms
 
-// ---------------------------------------------------------------------------
-// Segmentation settings
-// ---------------------------------------------------------------------------
-const MIN_SILENCE_RMS = 0.012;
-const NOISE_FLOOR_ALPHA = 0.08;
-const SPEECH_MULTIPLIER = 3.5;
-const SPEECH_MARGIN = 0.006;
+/** Default rolling segment length for batch interpretation (~3 minutes). */
+export const SEGMENT_MS = 180_000;
+/** Audio overlap carried into the next segment so boundaries are not lost. */
+export const SEGMENT_OVERLAP_MS = 15_000;
+/** Emit a shorter final segment on stop if at least this much speech was buffered. */
+const MIN_FINAL_SEGMENT_MS = 5_000;
 
-const PAUSE_GAP_MS = 600;
-const MIN_SPEECH_MS = 800;
-const MAX_SPEECH_MS = 20000;
-/** Overlap tail prepended to next chunk to avoid word loss at boundaries. */
-const OVERLAP_MS = 350;
-
-const PAUSE_FRAMES_NEEDED = Math.ceil(PAUSE_GAP_MS / FRAME_MS);
-const MAX_SPEECH_FRAMES = Math.ceil(MAX_SPEECH_MS / FRAME_MS);
-const MIN_SPEECH_FRAMES = Math.ceil(MIN_SPEECH_MS / FRAME_MS);
-const OVERLAP_FRAMES = Math.max(2, Math.ceil(OVERLAP_MS / FRAME_MS));
-
-// Feature flags (localStorage overrides for rollout testing)
-const FLAG_ADAPTIVE_VAD = 'interpreter-adaptive-vad';
-const FLAG_OVERLAP_CHUNKS = 'interpreter-overlap-chunks';
-
-function isFlagEnabled(key: string, defaultOn = true): boolean {
-  const stored = localStorage.getItem(key);
-  if (stored === '0') return false;
-  if (stored === '1') return true;
-  return defaultOn;
-}
+const MIN_FINAL_FRAMES = Math.ceil(MIN_FINAL_SEGMENT_MS / FRAME_MS);
 
 // ---------------------------------------------------------------------------
 // Audio helpers
@@ -77,20 +56,14 @@ function downsampleFrom48k(int16At48k: Int16Array): Int16Array {
   return downsampleTo16khz(int16At48k, SAMPLE_RATE_CAPTURE);
 }
 
-function rmsEnergy(int16: Int16Array): number {
-  let sum = 0;
-  for (let i = 0; i < int16.length; i++) {
-    const s = int16[i] / 32768;
-    sum += s * s;
-  }
-  return Math.sqrt(sum / int16.length);
-}
-
 function concatenateInt16(arrays: Int16Array[]): Int16Array {
   const total = arrays.reduce((n, a) => n + a.length, 0);
   const out = new Int16Array(total);
   let offset = 0;
-  for (const a of arrays) { out.set(a, offset); offset += a.length; }
+  for (const a of arrays) {
+    out.set(a, offset);
+    offset += a.length;
+  }
   return out;
 }
 
@@ -125,8 +98,16 @@ export async function getCaptureStream(
   });
 }
 
-export interface ChunkCallback {
-  (pcm16khz: ArrayBuffer): void;
+export interface SegmentCallback {
+  (pcm16khz: ArrayBuffer, meta: { segmentIndex: number; durationMs: number }): void;
+}
+
+export type CaptureStallReason = 'track_ended' | 'audio_context_suspended';
+
+export interface CaptureSegmentOptions {
+  segmentMs?: number;
+  overlapMs?: number;
+  onStall?: (reason: CaptureStallReason) => void;
 }
 
 const WORKLET_URL = new URL(
@@ -135,22 +116,27 @@ const WORKLET_URL = new URL(
 ).href;
 
 /**
- * Capture audio and fire `onChunk` at natural speech pauses.
- *
- * Adaptive VAD: rolling noise floor + speech multiplier threshold.
- * Overlap: keep tail frames and prepend to next utterance.
+ * Continuous capture that closes rolling ~3-minute PCM segments with overlap.
+ * Capture keeps running while prior segments are translated.
  */
-export async function captureAudioChunks(
+export async function captureAudioSegments(
   stream: MediaStream,
-  onChunk: ChunkCallback
+  onSegment: SegmentCallback,
+  options: CaptureSegmentOptions = {},
 ): Promise<() => void> {
   if (stream.getAudioTracks().length === 0) throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
 
-  const adaptiveVad = isFlagEnabled(FLAG_ADAPTIVE_VAD, true);
-  const overlapChunks = isFlagEnabled(FLAG_OVERLAP_CHUNKS, true);
+  const segmentFrames = Math.ceil((options.segmentMs ?? SEGMENT_MS) / FRAME_MS);
+  const overlapFrames = Math.ceil((options.overlapMs ?? SEGMENT_OVERLAP_MS) / FRAME_MS);
 
   const audioContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
-  if (audioContext.state === 'suspended') audioContext.resume().catch(() => {});
+  if (audioContext.state === 'suspended') {
+    try {
+      await audioContext.resume();
+    } catch {
+      /* ignore — may resume on user gesture */
+    }
+  }
   await audioContext.audioWorklet.addModule(WORKLET_URL);
 
   const source = audioContext.createMediaStreamSource(stream);
@@ -159,86 +145,83 @@ export async function captureAudioChunks(
   });
 
   let stopped = false;
-  let state: 'idle' | 'speaking' = 'idle';
-  let speechFrames: Int16Array[] = [];
-  let overlapPrefix: Int16Array[] = [];
-  let silenceFrameCount = 0;
-  let noiseFloor = MIN_SILENCE_RMS;
+  let stalled = false;
+  let frames: Int16Array[] = [];
+  let segmentIndex = 0;
 
-  function speechThreshold(): number {
-    if (!adaptiveVad) return MIN_SILENCE_RMS;
-    return Math.max(MIN_SILENCE_RMS, noiseFloor * SPEECH_MULTIPLIER + SPEECH_MARGIN);
-  }
-
-  function updateNoiseFloor(rms: number, isSilent: boolean): void {
-    if (!adaptiveVad || !isSilent) return;
-    noiseFloor = noiseFloor * (1 - NOISE_FLOOR_ALPHA) + rms * NOISE_FLOOR_ALPHA;
-  }
-
-  function flush() {
-    if (speechFrames.length < MIN_SPEECH_FRAMES) {
-      speechFrames = [];
-      silenceFrameCount = 0;
-      state = 'idle';
-      return;
+  function emitSegment(closingFrames: Int16Array[], keepOverlap: boolean) {
+    if (closingFrames.length === 0) return;
+    const pcm = concatenateInt16(closingFrames);
+    const durationMs = Math.round((pcm.length / SAMPLE_RATE_TARGET) * 1000);
+    const index = ++segmentIndex;
+    if (keepOverlap) {
+      frames = tailFrames(closingFrames, overlapFrames);
+    } else {
+      frames = [];
     }
+    onSegment(pcm.buffer.slice(0) as ArrayBuffer, { segmentIndex: index, durationMs });
+  }
 
-    const pcm = concatenateInt16(speechFrames);
-    overlapPrefix = overlapChunks ? tailFrames(speechFrames, OVERLAP_FRAMES) : [];
-    speechFrames = [];
-    silenceFrameCount = 0;
-    state = 'idle';
-    onChunk(pcm.buffer.slice(0) as ArrayBuffer);
+  function notifyStall(reason: CaptureStallReason) {
+    if (stopped || stalled) return;
+    stalled = true;
+    options.onStall?.(reason);
   }
 
   node.port.onmessage = (e: MessageEvent<{ frame: Float32Array }>) => {
-    if (stopped) return;
+    if (stopped || stalled) return;
 
     const int16_16k = downsampleFrom48k(floatTo16BitPcm(e.data.frame));
-    const rms = rmsEnergy(int16_16k);
-    const threshold = speechThreshold();
-    const silent = rms < threshold;
-    updateNoiseFloor(rms, silent);
+    frames.push(int16_16k);
 
-    if (state === 'idle') {
-      if (!silent) {
-        state = 'speaking';
-        if (overlapPrefix.length > 0) {
-          speechFrames = [...overlapPrefix, int16_16k];
-          overlapPrefix = [];
-        } else {
-          speechFrames.push(int16_16k);
-        }
-        silenceFrameCount = 0;
-      }
-    } else {
-      speechFrames.push(int16_16k);
-
-      if (silent) {
-        silenceFrameCount++;
-        if (silenceFrameCount >= PAUSE_FRAMES_NEEDED) {
-          flush();
-        }
-      } else {
-        silenceFrameCount = 0;
-        if (speechFrames.length >= MAX_SPEECH_FRAMES) {
-          flush();
-        }
-      }
+    if (frames.length >= segmentFrames) {
+      emitSegment(frames, true);
     }
   };
 
+  // Avoid feeding mic into speakers (feedback risk); worklet still receives via port.
   source.connect(node);
-  node.connect(audioContext.destination);
+
+  const onContextState = () => {
+    if (audioContext.state === 'suspended') {
+      notifyStall('audio_context_suspended');
+    }
+  };
+  audioContext.addEventListener('statechange', onContextState);
+
+  const onTrackEnded = () => notifyStall('track_ended');
+  stream.getTracks().forEach((t) => t.addEventListener('ended', onTrackEnded, { once: true }));
 
   const stop = () => {
+    if (stopped) return;
     stopped = true;
-    if (state === 'speaking' && speechFrames.length >= MIN_SPEECH_FRAMES) {
-      flush();
+    if (frames.length >= MIN_FINAL_FRAMES) {
+      emitSegment(frames, false);
+    } else {
+      frames = [];
     }
-    try { node.disconnect(); source.disconnect(); audioContext.close(); } catch (_) {}
+    try {
+      audioContext.removeEventListener('statechange', onContextState);
+      node.disconnect();
+      source.disconnect();
+      void audioContext.close();
+    } catch {
+      /* ignore teardown errors */
+    }
   };
 
-  stream.getTracks().forEach((t) => t.addEventListener('ended', stop, { once: true }));
   return stop;
+}
+
+/** @deprecated Prefer captureAudioSegments for meeting interpretation. Kept for short reply capture if needed. */
+export async function captureAudioChunks(
+  stream: MediaStream,
+  onChunk: (pcm16khz: ArrayBuffer) => void,
+): Promise<() => void> {
+  // Thin wrapper: emit ~20s max chunks without pause VAD (simple time slices).
+  return captureAudioSegments(
+    stream,
+    (pcm) => onChunk(pcm),
+    { segmentMs: 20_000, overlapMs: 350 },
+  );
 }

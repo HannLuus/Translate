@@ -104,6 +104,11 @@
   line-height: 1.4;
 }
 
+.app__interpret-hint--detail {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
 .app__tts-toggle {
   display: flex;
   align-items: center;

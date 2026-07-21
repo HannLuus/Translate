@@ -57,8 +57,9 @@ Deno.serve(async (req: Request) => {
   try {
     const worker = await EdgeRuntime.userWorkers.create({
       servicePath,
-      memoryLimitMb: 256,
-      workerTimeoutMs: 120_000,
+      memoryLimitMb: 512,
+      // Segment STT + Pro MT / meeting minutes can exceed 2 minutes
+      workerTimeoutMs: 300_000,
       noModuleCache: false,
       importMapPath: null,
       envVars,

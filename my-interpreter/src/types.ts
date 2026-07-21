@@ -37,11 +37,22 @@ export interface ResponseResult {
   audioBase64: string | null;
 }
 
-export interface CleanSummarizeResult {
+/** Structured meeting minutes (also keeps legacy CleanSummarize field names). */
+export interface MeetingMinutesResult {
+  executiveSummary: string;
+  chronologicalRecord: string;
+  decisions: string[];
+  actionItems: string[];
+  openQuestions: string[];
+  /** @deprecated alias of chronologicalRecord */
   cleanedTranscript: string;
+  /** @deprecated alias of executiveSummary */
   summary: string;
   keyPoints?: string[];
 }
+
+/** @deprecated Use MeetingMinutesResult */
+export type CleanSummarizeResult = MeetingMinutesResult;
 
 export interface PermissionState {
   tabAudio: 'unknown' | 'granted' | 'blocked' | 'unsupported';
@@ -65,5 +76,19 @@ export interface TranslationSegment {
   shownAt: number;
   /** Filled for interpretation segments (Burmese heard); absent for response segments. */
   burmeseText?: string;
+  /** Rolling segment index from capture (1-based), when applicable. */
+  segmentIndex?: number;
 }
 
+export type SegmentJobStatus = 'queued' | 'processing' | 'done' | 'failed' | 'empty';
+
+export interface SegmentJob {
+  localId: number;
+  segmentIndex: number;
+  pcm: ArrayBuffer;
+  durationMs: number;
+  status: SegmentJobStatus;
+  attempts: number;
+  error?: string;
+  enqueuedAt: number;
+}

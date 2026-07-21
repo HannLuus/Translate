@@ -20,6 +20,10 @@ export function releaseWakeLock(): void {
   }
 }
 
+export function isWakeLockActive(): boolean {
+  return wakeLock != null;
+}
+
 interface WakeLockAPI {
   request(type: 'screen'): Promise<WakeLockSentinel>;
 }

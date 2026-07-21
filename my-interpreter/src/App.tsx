@@ -6,23 +6,33 @@ import { ConversationView } from './components/ConversationView';
 import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
-import { getCaptureStream, captureAudioChunks } from './audioCapture';
-import { interpretAudio, healthCheck, getApiBase, cleanAndSummarize, appendInterpretMetrics, getInterpretMetrics, clearInterpretMetrics } from './api';
+import { getCaptureStream, captureAudioSegments, SEGMENT_MS } from './audioCapture';
+import {
+  interpretSegment,
+  healthCheck,
+  getApiBase,
+  generateMeetingMinutes,
+  appendInterpretMetrics,
+  getInterpretMetrics,
+  clearInterpretMetrics,
+} from './api';
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import { extractNewSuffix, isDuplicateSegment } from './textMerge';
-import type { CaptureMode, PermissionState, RecentContextPair, TermLockMap, TranslationSegment, CleanSummarizeResult, GlossaryEntry, ScenarioProfile } from './types';
+import type {
+  CaptureMode,
+  PermissionState,
+  RecentContextPair,
+  TermLockMap,
+  TranslationSegment,
+  MeetingMinutesResult,
+  GlossaryEntry,
+  ScenarioProfile,
+  SegmentJob,
+} from './types';
 import './App.css';
 
-function mergeBufferedEnglish(lines: string[]): string {
-  let merged = '';
-  for (const line of lines) {
-    const next = mergeSegmentText(line, merged);
-    if (next) merged = merged ? merged + ' ' + next : next;
-  }
-  return merged;
-}
-
-const SENTENCE_END = /[။?!.]\s*$/;
+const MAX_QUEUED_SEGMENTS = 3;
+const MAX_SEGMENT_ATTEMPTS = 4;
 
 function mergeSegmentText(candidate: string, lastLine: string): string | null {
   const trimmed = candidate.trim();
@@ -84,6 +94,34 @@ function glossaryEntriesToText(entries: GlossaryEntry[]): string {
     .join('\n');
 }
 
+function formatMinutesDownload(result: MeetingMinutesResult): string {
+  const lines = [
+    'MEETING MINUTES',
+    `Generated: ${new Date().toISOString()}`,
+    '',
+    '## Executive summary',
+    result.executiveSummary || '(none)',
+    '',
+    '## Chronological record',
+    result.chronologicalRecord || '(none)',
+    '',
+    '## Decisions',
+    ...(result.decisions.length ? result.decisions.map((d) => `- ${d}`) : ['(none)']),
+    '',
+    '## Action items',
+    ...(result.actionItems.length ? result.actionItems.map((d) => `- ${d}`) : ['(none)']),
+    '',
+    '## Open questions',
+    ...(result.openQuestions.length ? result.openQuestions.map((d) => `- ${d}`) : ['(none)']),
+    '',
+    '## Key points',
+    ...(result.keyPoints?.length
+      ? result.keyPoints.map((d) => `- ${d}`)
+      : ['(none)']),
+  ];
+  return lines.join('\n');
+}
+
 function App() {
   const errorLogRef = useRef<ErrorLogEntry[]>([]);
 
@@ -132,20 +170,26 @@ function App() {
   const [backendError, setBackendError] = useState<string | null>(null);
   const [captureStream, setCaptureStream] = useState<MediaStream | null>(null);
   const [interpretStatus, setInterpretStatus] = useState<'idle' | 'listening' | 'processing'>('idle');
-  const [cleanSummarizeStatus, setCleanSummarizeStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
-  const [cleanSummarizeResult, setCleanSummarizeResult] = useState<CleanSummarizeResult | null>(null);
-  const [cleanSummarizeError, setCleanSummarizeError] = useState<string | null>(null);
+  const [sessionStatusLine, setSessionStatusLine] = useState('');
+  const [minutesStatus, setMinutesStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [minutesResult, setMinutesResult] = useState<MeetingMinutesResult | null>(null);
+  const [minutesError, setMinutesError] = useState<string | null>(null);
+  const [failedSegmentLocalId, setFailedSegmentLocalId] = useState<number | null>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
-  const interpretQueueRef = useRef<ArrayBuffer[]>([]);
+  const sessionActiveRef = useRef(false);
+  const segmentQueueRef = useRef<SegmentJob[]>([]);
   const interpretDrainingRef = useRef(false);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
-  /** Last 6 bilingual pairs for MT continuity (sent to backend on flush). */
   const recentContextRef = useRef<RecentContextPair[]>([]);
-  const burmeseBufferRef = useRef('');
-  const englishBufferRef = useRef<string[]>([]);
-  const bufferStartTimeRef = useRef(0);
-  const lastAudioBase64Ref = useRef<string | null>(null);
   const termLockRef = useRef<TermLockMap>({});
+  const jobIdRef = useRef(0);
+  const queueDepthRef = useRef(0);
+  const [, setQueueTick] = useState(0);
+
+  const bumpQueueUi = useCallback(() => {
+    queueDepthRef.current = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing' || j.status === 'failed').length;
+    setQueueTick((n) => n + 1);
+  }, []);
 
   useEffect(() => {
     checkPermissions().then(setPermissionState);
@@ -170,11 +214,29 @@ function App() {
   }, [pushErrorLog]);
 
   useEffect(() => {
-    const rerequest = () => {
-      if (document.visibilityState === 'visible' && active) requestWakeLock();
+    if (!active) return;
+    const id = window.setInterval(() => {
+      void healthCheck().then(({ ok, error: err }) => {
+        if (!ok) {
+          setBackendStatus('unreachable');
+          setBackendError(err ?? 'Unknown');
+        } else if (backendStatus !== 'ok') {
+          setBackendStatus('ok');
+          setBackendError(null);
+        }
+      });
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [active, backendStatus]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && active) {
+        void requestWakeLock();
+      }
     };
-    document.addEventListener('visibilitychange', rerequest);
-    return () => document.removeEventListener('visibilitychange', rerequest);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [active]);
 
   useEffect(() => {
@@ -204,15 +266,183 @@ function App() {
     const audio = new Audio('data:audio/mp3;base64,' + base64);
     currentTtsRef.current = audio;
     setIsPlayingTts(true);
-    audio.play();
+    void audio.play().catch(() => {
+      currentTtsRef.current = null;
+      setIsPlayingTts(false);
+    });
     audio.onended = () => {
       currentTtsRef.current = null;
       setIsPlayingTts(false);
     };
   }, []);
 
+  const appendTranslation = useCallback((english: string, burmese: string, segmentIndex: number) => {
+    const eng = english.trim();
+    const my = burmese.trim();
+    if (!eng && !my) return;
+
+    setTranslationSegments((prev) => {
+      const lastText = prev[prev.length - 1]?.text ?? '';
+      const displayEnglish = eng ? mergeSegmentText(eng, lastText) : null;
+      if (!displayEnglish && !my) return prev;
+
+      if (displayEnglish || eng) {
+        recentContextRef.current = [
+          ...recentContextRef.current,
+          { burmese: my, english: eng || displayEnglish || '' },
+        ].slice(-4);
+      }
+
+      return [
+        ...prev,
+        {
+          id: ++segmentIdRef.current,
+          text: displayEnglish || eng || '(Burmese heard; English empty)',
+          shownAt: Date.now(),
+          burmeseText: my || undefined,
+          segmentIndex,
+        },
+      ];
+    });
+  }, []);
+
+  const drainSegmentQueue = useCallback(async () => {
+    if (interpretDrainingRef.current) return;
+    interpretDrainingRef.current = true;
+
+    const combinedContext = useGlossaryAndBriefing
+      ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
+      : '';
+
+    while (sessionActiveRef.current || segmentQueueRef.current.some((j) => j.status === 'queued' || j.status === 'processing')) {
+      const job = segmentQueueRef.current.find((j) => j.status === 'queued');
+      if (!job) break;
+
+      job.status = 'processing';
+      job.attempts += 1;
+      setInterpretStatus('processing');
+      setFailedSegmentLocalId(null);
+      const lagMin = Math.max(0, Math.round((Date.now() - job.enqueuedAt) / 60000));
+      setSessionStatusLine(
+        `Translating segment ${job.segmentIndex} (${Math.round(job.durationMs / 1000)}s audio)` +
+          (lagMin > 0 ? ` · ~${lagMin} min behind` : '') +
+          (queueDepthRef.current > 1 ? ` · ${queueDepthRef.current - 1} waiting` : ''),
+      );
+      bumpQueueUi();
+
+      try {
+        const result = await interpretSegment(
+          job.pcm,
+          combinedContext || undefined,
+          termLockRef.current,
+          recentContextRef.current,
+        );
+        if (!sessionActiveRef.current && !segmentQueueRef.current.includes(job)) {
+          break;
+        }
+        if (result.termLock) termLockRef.current = result.termLock;
+        if (result.diagnostics) appendInterpretMetrics(result.diagnostics);
+
+        const burmese = result.burmeseText?.trim() ?? '';
+        const english = result.englishText?.trim() ?? '';
+        if (!burmese && !english) {
+          job.status = 'empty';
+          setSessionStatusLine(`Segment ${job.segmentIndex}: no speech detected`);
+          pushErrorLog('warn', `Segment ${job.segmentIndex}: empty STT/MT`);
+        } else {
+          job.status = 'done';
+          appendTranslation(english, burmese, job.segmentIndex);
+          if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
+          setSessionStatusLine(`Segment ${job.segmentIndex} ready`);
+        }
+        // Drop finished PCM to free memory
+        job.pcm = new ArrayBuffer(0);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Interpret failed';
+        if (job.attempts < MAX_SEGMENT_ATTEMPTS) {
+          job.status = 'queued';
+          setError(`Segment ${job.segmentIndex} failed (attempt ${job.attempts}): ${msg}. Retrying…`);
+          pushErrorLog('error', `Segment ${job.segmentIndex}: ${msg}`);
+          await new Promise((r) => setTimeout(r, 2000 * job.attempts));
+        } else {
+          job.status = 'failed';
+          job.error = msg;
+          setFailedSegmentLocalId(job.localId);
+          setError(`Segment ${job.segmentIndex} failed after ${job.attempts} attempts: ${msg}`);
+          pushErrorLog('error', `Segment ${job.segmentIndex} final: ${msg}`);
+          setSessionStatusLine(`Segment ${job.segmentIndex} failed — tap Retry`);
+          bumpQueueUi();
+          break;
+        }
+      }
+      bumpQueueUi();
+    }
+
+    interpretDrainingRef.current = false;
+    if (sessionActiveRef.current) {
+      setInterpretStatus('listening');
+      const pending = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'failed').length;
+      if (pending === 0) {
+        setSessionStatusLine(`Recording next ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`);
+      }
+    } else {
+      setInterpretStatus('idle');
+    }
+  }, [activeProfile, useGlossaryAndBriefing, appendTranslation, playTts, playTtsEnabled, pushErrorLog, bumpQueueUi]);
+
+  const enqueueSegment = useCallback((pcm: ArrayBuffer, segmentIndex: number, durationMs: number) => {
+    const unfinished = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing');
+    if (unfinished.length >= MAX_QUEUED_SEGMENTS) {
+      const msg = `Segment queue full (${MAX_QUEUED_SEGMENTS}). Translation is behind — wait for a segment to finish before more audio is queued.`;
+      setError(msg);
+      pushErrorLog('warn', msg);
+      setSessionStatusLine('Queue full — still recording, waiting to catch up');
+      // Still keep the newest segment by dropping oldest queued (not processing)
+      const oldestQueued = segmentQueueRef.current.find((j) => j.status === 'queued');
+      if (oldestQueued) {
+        oldestQueued.status = 'failed';
+        oldestQueued.error = 'Dropped: queue overflow';
+        oldestQueued.pcm = new ArrayBuffer(0);
+        pushErrorLog('warn', `Dropped segment ${oldestQueued.segmentIndex} due to queue overflow`);
+      } else {
+        return;
+      }
+    }
+
+    const job: SegmentJob = {
+      localId: ++jobIdRef.current,
+      segmentIndex,
+      pcm,
+      durationMs,
+      status: 'queued',
+      attempts: 0,
+      enqueuedAt: Date.now(),
+    };
+    segmentQueueRef.current.push(job);
+    bumpQueueUi();
+    void drainSegmentQueue();
+  }, [bumpQueueUi, drainSegmentQueue, pushErrorLog]);
+
+  const retryFailedSegment = useCallback(() => {
+    const job = segmentQueueRef.current.find((j) => j.localId === failedSegmentLocalId && j.status === 'failed');
+    if (!job || job.pcm.byteLength === 0) {
+      setError('Nothing left to retry for that segment (audio was cleared).');
+      return;
+    }
+    job.status = 'queued';
+    job.attempts = 0;
+    job.error = undefined;
+    setFailedSegmentLocalId(null);
+    setError(null);
+    bumpQueueUi();
+    void drainSegmentQueue();
+  }, [failedSegmentLocalId, bumpQueueUi, drainSegmentQueue]);
+
   const startInterpretation = useCallback(async () => {
     setError(null);
+    setMinutesResult(null);
+    setMinutesStatus('idle');
+    setMinutesError(null);
     if (mode === 'rooted_android' && !loopbackDeviceId.trim()) {
       const msg = 'Enter a loopback device ID for Rooted Android, or switch to Face-to-Face (Mic) mode.';
       setError(msg);
@@ -222,121 +452,54 @@ function App() {
     try {
       setTranslationSegments([]);
       recentContextRef.current = [];
-      burmeseBufferRef.current = '';
-      englishBufferRef.current = [];
-      bufferStartTimeRef.current = 0;
-      lastAudioBase64Ref.current = null;
       termLockRef.current = {};
+      segmentQueueRef.current = [];
+      jobIdRef.current = 0;
       clearInterpretMetrics();
+      setFailedSegmentLocalId(null);
+
       const stream = await getCaptureStream(
         mode,
         mode === 'rooted_android' ? loopbackDeviceId.trim() || undefined : undefined
       );
       setCaptureStream(stream);
       setActive(true);
+      sessionActiveRef.current = true;
       setInterpretStatus('listening');
-      await requestWakeLock();
+      setSessionStatusLine(`Recording first ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`);
 
-        const flushInterpretBuffer = (playTtsOnFlush: boolean) => {
-          const fullBuffer = burmeseBufferRef.current.trim();
-          const englishLines = englishBufferRef.current;
-          if (!fullBuffer && englishLines.length === 0) return;
+      const wakeOk = await requestWakeLock();
+      if (!wakeOk) {
+        pushErrorLog('warn', 'Wake lock unavailable — keep the screen on during the meeting');
+        setError('Could not keep the screen awake. Leave this tab visible so capture does not stall.');
+      }
 
-          const mergedEnglish = mergeBufferedEnglish(englishLines);
-          const audioBase64 = lastAudioBase64Ref.current;
+      const stop = await captureAudioSegments(
+        stream,
+        (pcm, meta) => {
+          if (!sessionActiveRef.current) return;
+          enqueueSegment(pcm, meta.segmentIndex, meta.durationMs);
+        },
+        {
+          onStall: (reason) => {
+            const msg =
+              reason === 'track_ended'
+                ? 'Audio share ended (tab/window closed or unshared). Capture stopped — tap Start and share again.'
+                : 'Audio engine suspended (tab backgrounded or system pause). Capture stopped — return to this tab and Start again.';
+            setError(msg);
+            pushErrorLog('error', msg);
+            setSessionStatusLine('Capture stalled');
+            stopCaptureRef.current?.();
+            stopCaptureRef.current = null;
+          },
+        },
+      );
 
-          burmeseBufferRef.current = '';
-          englishBufferRef.current = [];
-          bufferStartTimeRef.current = 0;
-          lastAudioBase64Ref.current = null;
-
-          if (!mergedEnglish && !fullBuffer) return;
-
-          if (mergedEnglish) {
-            setTranslationSegments((prev) => {
-              const lastText = prev[prev.length - 1]?.text ?? '';
-              const displayEnglish = mergeSegmentText(mergedEnglish, lastText);
-              if (!displayEnglish) return prev;
-
-              recentContextRef.current = [
-                ...recentContextRef.current,
-                { burmese: fullBuffer, english: mergedEnglish },
-              ].slice(-6);
-
-              return [
-                ...prev,
-                {
-                  id: ++segmentIdRef.current,
-                  text: displayEnglish,
-                  shownAt: Date.now(),
-                  burmeseText: fullBuffer || undefined,
-                },
-              ];
-            });
-          }
-
-          if (playTtsOnFlush && playTtsEnabled && audioBase64) playTts(audioBase64);
-        };
-
-        const drainInterpretQueue = async () => {
-          if (interpretDrainingRef.current) return;
-          interpretDrainingRef.current = true;
-          setInterpretStatus('processing');
-          const combinedContext = useGlossaryAndBriefing
-            ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
-            : '';
-          while (interpretQueueRef.current.length > 0) {
-            const pcm = interpretQueueRef.current.shift()!;
-            try {
-              const result = await interpretAudio(
-                pcm,
-                combinedContext || undefined,
-                termLockRef.current,
-                recentContextRef.current,
-              );
-              if (result.termLock) termLockRef.current = result.termLock;
-              if (result.diagnostics) appendInterpretMetrics(result.diagnostics);
-
-              const burmeseChunk = result.burmeseText?.trim() ?? '';
-              const englishLine = result.englishText?.trim() ?? '';
-              if (!burmeseChunk && !englishLine) continue;
-
-              const wasEmpty = !burmeseBufferRef.current && englishBufferRef.current.length === 0;
-              if (burmeseChunk) burmeseBufferRef.current += burmeseChunk;
-              if (englishLine) englishBufferRef.current.push(englishLine);
-              if (result.audioBase64) lastAudioBase64Ref.current = result.audioBase64;
-              if (wasEmpty) bufferStartTimeRef.current = Date.now();
-
-              const shouldFlush =
-                SENTENCE_END.test(burmeseBufferRef.current) ||
-                (bufferStartTimeRef.current > 0 && Date.now() - bufferStartTimeRef.current > 4000);
-
-              if (shouldFlush) flushInterpretBuffer(true);
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : 'Interpret failed';
-              setError(msg);
-              pushErrorLog('error', `Interpret: ${msg}`);
-            }
-          }
-          interpretDrainingRef.current = false;
-          if (stopCaptureRef.current) setInterpretStatus('listening');
-        };
-
-        const stop = await captureAudioChunks(stream, (pcm) => {
-          interpretQueueRef.current.push(pcm);
-          void drainInterpretQueue();
-        });
       stopCaptureRef.current = () => {
-        flushInterpretBuffer(true);
+        // Flush final partial segment while session is still marked active
         stop();
-        interpretQueueRef.current = [];
-        interpretDrainingRef.current = false;
-        recentContextRef.current = [];
-        burmeseBufferRef.current = '';
-        englishBufferRef.current = [];
-        bufferStartTimeRef.current = 0;
-        lastAudioBase64Ref.current = null;
-        termLockRef.current = {};
+        sessionActiveRef.current = false;
+        void drainSegmentQueue();
         if (currentTtsRef.current) {
           currentTtsRef.current.pause();
           currentTtsRef.current = null;
@@ -347,14 +510,17 @@ function App() {
         setInterpretStatus('idle');
         releaseWakeLock();
         setActive(false);
+        setSessionStatusLine('Finishing any segments still translating…');
       };
     } catch (e) {
+      sessionActiveRef.current = false;
       setInterpretStatus('idle');
+      setActive(false);
       const msg = e instanceof Error ? e.message : 'Failed to start capture';
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, testingMode, playTts, playTtsEnabled, pushErrorLog, activeProfile, useGlossaryAndBriefing]);
+  }, [mode, loopbackDeviceId, pushErrorLog, enqueueSegment, drainSegmentQueue]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -416,6 +582,8 @@ function App() {
     errorLogRef.current = [];
   }, [backendStatus, backendError]);
 
+  const queuedCount = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
+
   return (
     <div className="app">
       <header className="app__header">
@@ -426,7 +594,7 @@ function App() {
           )}
           {backendStatus === 'unreachable' && (
             <span className="app__backend-unreachable">
-              Backend unreachable{backendError ? `: ${backendError}` : ''}. On free hosting the first request may take ~50s.
+              Backend unreachable{backendError ? `: ${backendError}` : ''}.
             </span>
           )}
           {backendStatus === 'unknown' && (
@@ -470,10 +638,16 @@ function App() {
           />
         )}
 
-
         {mode === 'desktop' && !active && (
           <p className="app__desktop-hint" role="status">
             When you click Start, choose the Teams tab (or window) and check <strong>Share tab audio</strong> so the app can hear the meeting.
+            Translation arrives in ~{Math.round(SEGMENT_MS / 60000)}-minute segments (not live).
+          </p>
+        )}
+
+        {!active && (
+          <p className="app__desktop-hint" role="status">
+            Mode: batch segments (~{Math.round(SEGMENT_MS / 60000)} min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
           </p>
         )}
 
@@ -517,12 +691,26 @@ function App() {
           <div className="app__interpret-status">
             <p className="app__interpret-hint" role="status">
               {interpretStatus === 'listening' && (
-                <>Live translation — newest at the bottom. Full script kept until you clear it.</>
+                <>Recording continuously · English updates after each ~{Math.round(SEGMENT_MS / 60000)}-minute segment.</>
               )}
               {interpretStatus === 'processing' && (
-                <>Sending to server…</>
+                <>Sending segment to server…{queuedCount > 1 ? ` (${queuedCount} in queue)` : ''}</>
               )}
             </p>
+            {sessionStatusLine && (
+              <p className="app__interpret-hint app__interpret-hint--detail" role="status">
+                {sessionStatusLine}
+              </p>
+            )}
+          </div>
+        )}
+
+        {failedSegmentLocalId != null && (
+          <div className="app__clean-error">
+            <p>A segment failed. You can retry it without restarting the meeting.</p>
+            <button type="button" className="app__btn app__btn--secondary" onClick={retryFailedSegment}>
+              Retry failed segment
+            </button>
           </div>
         )}
 
@@ -545,40 +733,51 @@ function App() {
               type="button"
               className="app__btn app__btn--start"
               disabled={
-                cleanSummarizeStatus === 'loading' ||
+                minutesStatus === 'loading' ||
                 !translationSegments.some((s) => s.text.trim() !== '')
               }
               onClick={async () => {
-                setCleanSummarizeError(null);
-                setCleanSummarizeStatus('loading');
+                setMinutesError(null);
+                setMinutesStatus('loading');
                 const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
+                const segmentPayload = translationSegments
+                  .filter((s) => s.text.trim())
+                  .map((s) => ({
+                    english: s.text,
+                    burmese: s.burmeseText,
+                    segmentIndex: s.segmentIndex,
+                  }));
                 const combinedContext = useGlossaryAndBriefing
                   ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
                   : '';
                 try {
-                  const result = await cleanAndSummarize(fullScript || '', combinedContext || undefined);
-                  setCleanSummarizeResult(result);
-                  setCleanSummarizeStatus('success');
+                  const result = await generateMeetingMinutes(
+                    fullScript || '',
+                    combinedContext || undefined,
+                    segmentPayload,
+                  );
+                  setMinutesResult(result);
+                  setMinutesStatus('success');
                 } catch (e) {
-                  const msg = e instanceof Error ? e.message : 'Clean & summarize failed';
-                  setCleanSummarizeError(msg);
-                  setCleanSummarizeStatus('error');
-                  pushErrorLog('error', `Clean & summarize: ${msg}`);
+                  const msg = e instanceof Error ? e.message : 'Meeting minutes failed';
+                  setMinutesError(msg);
+                  setMinutesStatus('error');
+                  pushErrorLog('error', `Meeting minutes: ${msg}`);
                 }
               }}
               whileTap={{ scale: 0.98 }}
             >
-              {cleanSummarizeStatus === 'loading' ? 'Cleaning…' : 'Clean & summarize'}
+              {minutesStatus === 'loading' ? 'Writing minutes…' : 'Generate meeting minutes'}
             </motion.button>
             <motion.button
               type="button"
               className="app__btn app__btn--secondary"
-              disabled={cleanSummarizeStatus === 'loading'}
+              disabled={minutesStatus === 'loading'}
               onClick={() => {
                 setTranslationSegments([]);
-                setCleanSummarizeStatus('idle');
-                setCleanSummarizeResult(null);
-                setCleanSummarizeError(null);
+                setMinutesStatus('idle');
+                setMinutesResult(null);
+                setMinutesError(null);
               }}
               whileTap={{ scale: 0.98 }}
             >
@@ -587,15 +786,15 @@ function App() {
           </div>
         )}
 
-        {cleanSummarizeStatus === 'error' && cleanSummarizeError && (
+        {minutesStatus === 'error' && minutesError && (
           <div className="app__clean-error">
-            <p>{cleanSummarizeError}</p>
+            <p>{minutesError}</p>
             <button
               type="button"
               className="app__btn app__btn--secondary"
               onClick={() => {
-                setCleanSummarizeStatus('idle');
-                setCleanSummarizeError(null);
+                setMinutesStatus('idle');
+                setMinutesError(null);
               }}
             >
               Dismiss
@@ -603,52 +802,90 @@ function App() {
           </div>
         )}
 
-        {cleanSummarizeStatus === 'success' && cleanSummarizeResult && (
+        {minutesStatus === 'success' && minutesResult && (
           <div className="app__clean-result">
-            <h3 className="app__clean-result-title">Cleaned transcript & summary</h3>
+            <h3 className="app__clean-result-title">Meeting minutes</h3>
             <p className="app__clean-result-hint">
-              {useGlossaryAndBriefing ? 'Based on your glossary and meeting briefing.' : 'Cleaned without glossary or briefing.'}
+              Structured from your bilingual segments
+              {useGlossaryAndBriefing ? ' using glossary and briefing.' : '.'}
             </p>
-            <div className="app__clean-transcript-wrap">
-              <label className="app__clean-label">Cleaned transcript</label>
-              <div className="app__clean-transcript" role="document">
-                {cleanSummarizeResult.cleanedTranscript || '(Empty)'}
-              </div>
-              <button
-                type="button"
-                className="app__btn app__btn--secondary app__clean-download"
-                onClick={() => {
-                  const blob = new Blob([cleanSummarizeResult.cleanedTranscript || ''], { type: 'text/plain' });
-                  const a = document.createElement('a');
-                  a.href = URL.createObjectURL(blob);
-                  a.download = `meeting-cleaned-${new Date().toISOString().slice(0, 10)}.txt`;
-                  a.click();
-                  URL.revokeObjectURL(a.href);
-                }}
-              >
-                Download cleaned transcript
-              </button>
-            </div>
+
             <div className="app__clean-summary-wrap">
-              <label className="app__clean-label">Summary</label>
-              <p className="app__clean-summary">{cleanSummarizeResult.summary || '(No summary)'}</p>
-              {cleanSummarizeResult.keyPoints && cleanSummarizeResult.keyPoints.length > 0 && (
-                <>
-                  <label className="app__clean-label">Key points</label>
-                  <ul className="app__clean-keypoints">
-                    {cleanSummarizeResult.keyPoints.map((point, i) => (
-                      <li key={i}>{point}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
+              <label className="app__clean-label">Executive summary</label>
+              <p className="app__clean-summary">{minutesResult.executiveSummary || '(No summary)'}</p>
             </div>
+
+            <div className="app__clean-transcript-wrap">
+              <label className="app__clean-label">Chronological record</label>
+              <div className="app__clean-transcript" role="document">
+                {minutesResult.chronologicalRecord || '(Empty)'}
+              </div>
+            </div>
+
+            {minutesResult.decisions.length > 0 && (
+              <div className="app__clean-summary-wrap">
+                <label className="app__clean-label">Decisions</label>
+                <ul className="app__clean-keypoints">
+                  {minutesResult.decisions.map((point, i) => (
+                    <li key={`d-${i}`}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {minutesResult.actionItems.length > 0 && (
+              <div className="app__clean-summary-wrap">
+                <label className="app__clean-label">Action items</label>
+                <ul className="app__clean-keypoints">
+                  {minutesResult.actionItems.map((point, i) => (
+                    <li key={`a-${i}`}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {minutesResult.openQuestions.length > 0 && (
+              <div className="app__clean-summary-wrap">
+                <label className="app__clean-label">Open questions</label>
+                <ul className="app__clean-keypoints">
+                  {minutesResult.openQuestions.map((point, i) => (
+                    <li key={`q-${i}`}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {minutesResult.keyPoints && minutesResult.keyPoints.length > 0 && (
+              <div className="app__clean-summary-wrap">
+                <label className="app__clean-label">Key points</label>
+                <ul className="app__clean-keypoints">
+                  {minutesResult.keyPoints.map((point, i) => (
+                    <li key={`k-${i}`}>{point}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <button
+              type="button"
+              className="app__btn app__btn--secondary app__clean-download"
+              onClick={() => {
+                const blob = new Blob([formatMinutesDownload(minutesResult)], { type: 'text/plain;charset=utf-8' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `meeting-minutes-${new Date().toISOString().slice(0, 10)}.txt`;
+                a.click();
+                URL.revokeObjectURL(a.href);
+              }}
+            >
+              Download meeting minutes
+            </button>
             <button
               type="button"
               className="app__btn app__btn--secondary"
               onClick={() => {
-                setCleanSummarizeStatus('idle');
-                setCleanSummarizeResult(null);
+                setMinutesStatus('idle');
+                setMinutesResult(null);
               }}
             >
               Dismiss

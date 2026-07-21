@@ -1,4 +1,12 @@
-import type { CleanSummarizeResult, InterpretDiagnostics, InterpretResult, RecentContextPair, ResponseResult, TermLockMap } from './types';
+import type {
+  CleanSummarizeResult,
+  InterpretDiagnostics,
+  InterpretResult,
+  MeetingMinutesResult,
+  RecentContextPair,
+  ResponseResult,
+  TermLockMap,
+} from './types';
 
 /**
  * Supabase Edge Functions base URL.
@@ -25,6 +33,9 @@ function baseHeaders(extra?: Record<string, string>): Record<string, string> {
 const FETCH_TIMEOUT_MS = {
   default: 60_000,
   interpret: 90_000,
+  /** ~3 min audio + Pro MT */
+  interpretSegment: 180_000,
+  meetingMinutes: 180_000,
 } as const;
 
 async function fetchWithTimeout(
@@ -88,33 +99,27 @@ function isNetworkError(e: unknown): boolean {
   return /failed to fetch|network|connection closed|ERR_CONNECTION/i.test(msg);
 }
 
-/** 503 or quota/rate limit — backend may succeed after a short wait (long meetings). */
+/** Transient failures worth retrying on long meetings. */
 function isRetryableInterpretError(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String(e);
-  return /503|429|quota|Quota exceeded|rate limit|free_tier|billing/i.test(msg);
+  return /503|502|504|429|quota|Quota exceeded|rate limit|free_tier|billing|timed out|timeout|Gateway/i.test(msg);
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function doInterpret(
-  body: ArrayBuffer,
-  headers: Record<string, string>,
-): Promise<InterpretResult> {
-  const res = await fetchWithTimeout(
-    `${API_BASE}/interpret`,
-    { method: 'POST', headers, body },
-    FETCH_TIMEOUT_MS.interpret,
-  );
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(formatApiErrorMessage(res.status, text, `Interpret failed (${res.status})`));
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + chunkSize, bytes.length)));
   }
-  return res.json() as Promise<InterpretResult>;
+  return btoa(binary);
 }
 
-const INTERPRET_RETRY_DELAYS_MS = [3000, 6000];
+const INTERPRET_RETRY_DELAYS_MS = [3000, 6000, 12000];
 
 export interface InterpretMetricsSample extends InterpretDiagnostics {
   capturedAt: string;
@@ -146,38 +151,41 @@ export function clearInterpretMetrics(): void {
   sessionStorage.removeItem(METRICS_STORAGE_KEY);
 }
 
-/**
- * Production Kong on the VPS allows x-meeting-context but not yet x-recent-context.
- * Fold recent dialogue into meeting context until Kong is patched (see scripts/patch-kong-cors-on-vps.sh).
- */
-function meetingContextWithRecent(
-  meetingContext?: string | null,
-  recentContext?: RecentContextPair[],
-): string | null {
+/** Cap glossary/briefing size so request bodies stay reasonable. */
+function capMeetingContext(meetingContext?: string | null, maxChars = 12_000): string | null {
   const base = meetingContext?.trim() ?? '';
-  if (!recentContext?.length) return base || null;
-  const lines = recentContext.map(
-    (p) => `[Burmese]: ${p.burmese.trim()}\n[English]: ${p.english.trim()}`,
-  );
-  const block = `Recent conversation:\n${lines.join('\n')}`;
-  return base ? `${base}\n\n${block}` : block;
+  if (!base) return null;
+  if (base.length <= maxChars) return base;
+  return base.slice(0, maxChars) + '\n\n[Meeting context truncated for size.]';
 }
 
-export async function interpretAudio(
+function capTermLock(termLock?: TermLockMap, maxEntries = 80): TermLockMap | undefined {
+  if (!termLock) return undefined;
+  const entries = Object.entries(termLock);
+  if (entries.length === 0) return undefined;
+  if (entries.length <= maxEntries) return termLock;
+  return Object.fromEntries(entries.slice(-maxEntries));
+}
+
+/**
+ * Batch interpret: ~3-minute PCM segment with context in JSON body (avoids header bloat / Kong CORS).
+ */
+export async function interpretSegment(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
   termLock?: TermLockMap,
   recentContext?: RecentContextPair[],
 ): Promise<InterpretResult> {
-  const headers = baseHeaders({ 'Content-Type': 'application/octet-stream' });
-  const meetingPayload = meetingContextWithRecent(meetingContext, recentContext);
-  if (meetingPayload) {
-    headers['X-Meeting-Context'] = btoa(unescape(encodeURIComponent(meetingPayload)));
-  }
-  if (termLock && Object.keys(termLock).length > 0) {
-    headers['X-Term-Lock'] = btoa(unescape(encodeURIComponent(JSON.stringify(termLock))));
-  }
-  const body = audioPcm16khz.slice(0);
+  const body = JSON.stringify({
+    audioBase64: arrayBufferToBase64(audioPcm16khz),
+    sampleRate: 16000,
+    meetingContext: capMeetingContext(meetingContext),
+    termLock: capTermLock(termLock) ?? {},
+    recentContext: (recentContext ?? []).slice(-4),
+    mode: 'segment',
+  });
+
+  const headers = baseHeaders({ 'Content-Type': 'application/json' });
   const maxAttempts = 1 + INTERPRET_RETRY_DELAYS_MS.length;
   let lastError: unknown;
 
@@ -186,11 +194,20 @@ export async function interpretAudio(
       if (attempt > 0) {
         await delay(INTERPRET_RETRY_DELAYS_MS[attempt - 1]);
       }
-      return await doInterpret(body, headers);
+      const res = await fetchWithTimeout(
+        `${API_BASE}/interpret`,
+        { method: 'POST', headers, body },
+        FETCH_TIMEOUT_MS.interpretSegment,
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(formatApiErrorMessage(res.status, text, `Interpret failed (${res.status})`));
+      }
+      return res.json() as Promise<InterpretResult>;
     } catch (e) {
       lastError = e;
       if (isNetworkError(e) && attempt < maxAttempts - 1) {
-        continue; // retry without extra delay for network errors
+        continue;
       }
       if (attempt === maxAttempts - 1 || !isRetryableInterpretError(e)) {
         throw e;
@@ -199,6 +216,16 @@ export async function interpretAudio(
   }
 
   throw lastError;
+}
+
+/** @deprecated Prefer interpretSegment for meetings. */
+export async function interpretAudio(
+  audioPcm16khz: ArrayBuffer,
+  meetingContext?: string | null,
+  termLock?: TermLockMap,
+  recentContext?: RecentContextPair[],
+): Promise<InterpretResult> {
+  return interpretSegment(audioPcm16khz, meetingContext, termLock, recentContext);
 }
 
 export async function responseTranslate(englishText: string): Promise<ResponseResult> {
@@ -218,25 +245,68 @@ export async function responseTranslate(englishText: string): Promise<ResponseRe
   return res.json() as Promise<ResponseResult>;
 }
 
-/** POST /functions/v1/clean-and-summarize – clean transcript using briefing and return summary. */
-export async function cleanAndSummarize(
+export interface TranscriptSegmentInput {
+  burmese?: string;
+  english: string;
+  segmentIndex?: number;
+}
+
+/** POST /functions/v1/clean-and-summarize – structured meeting minutes from bilingual transcript. */
+export async function generateMeetingMinutes(
   transcript: string,
   meetingContext?: string | null,
-): Promise<CleanSummarizeResult> {
+  segments?: TranscriptSegmentInput[],
+): Promise<MeetingMinutesResult> {
   const res = await fetchWithTimeout(
     `${API_BASE}/clean-and-summarize`,
     {
       method: 'POST',
       headers: baseHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ transcript, meetingContext: meetingContext ?? null }),
+      body: JSON.stringify({
+        transcript,
+        meetingContext: meetingContext ?? null,
+        segments: segments ?? null,
+      }),
     },
-    FETCH_TIMEOUT_MS.default,
+    FETCH_TIMEOUT_MS.meetingMinutes,
   );
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(formatApiErrorMessage(res.status, text, 'Clean & summarize failed'));
+    throw new Error(formatApiErrorMessage(res.status, text, 'Meeting minutes failed'));
   }
-  return res.json() as Promise<CleanSummarizeResult>;
+  const data = (await res.json()) as MeetingMinutesResult;
+  return normalizeMinutes(data);
+}
+
+/** @deprecated Use generateMeetingMinutes */
+export async function cleanAndSummarize(
+  transcript: string,
+  meetingContext?: string | null,
+): Promise<CleanSummarizeResult> {
+  return generateMeetingMinutes(transcript, meetingContext);
+}
+
+function normalizeMinutes(data: Partial<MeetingMinutesResult>): MeetingMinutesResult {
+  const chronologicalRecord =
+    (data.chronologicalRecord ?? data.cleanedTranscript ?? '').trim();
+  const executiveSummary = (data.executiveSummary ?? data.summary ?? '').trim();
+  const decisions = Array.isArray(data.decisions) ? data.decisions.map(String) : [];
+  const actionItems = Array.isArray(data.actionItems) ? data.actionItems.map(String) : [];
+  const openQuestions = Array.isArray(data.openQuestions) ? data.openQuestions.map(String) : [];
+  const keyPoints = Array.isArray(data.keyPoints)
+    ? data.keyPoints.map(String)
+    : [...decisions, ...actionItems].slice(0, 8);
+
+  return {
+    executiveSummary,
+    chronologicalRecord,
+    decisions,
+    actionItems,
+    openQuestions,
+    cleanedTranscript: chronologicalRecord,
+    summary: executiveSummary,
+    keyPoints,
+  };
 }
 
 export interface ResponseAudioResult {

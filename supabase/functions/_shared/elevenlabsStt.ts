@@ -39,14 +39,15 @@ function pcmToWav(pcm16: Uint8Array, sampleRate = 16000): Uint8Array {
 }
 
 function buildKeyterms(meetingContext?: string | null): string[] {
-  const fromGlossary = parseGlossaryHints(meetingContext).map((h) => h.term.trim()).filter(Boolean);
+  const hints = parseGlossaryHints(meetingContext);
+  // ElevenLabs keyterms only accept Latin/ASCII. Prefer English glossary meanings
+  // (and any Latin terms) so domain vocabulary still biases STT.
+  const fromGlossary = hints.flatMap((h) => [h.term.trim(), h.meaning.trim()].filter(Boolean));
   const envTerms = (Deno.env.get('ELEVENLABS_MYANMAR_KEYTERMS') ?? '')
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
-  // ElevenLabs keyterms only accept ASCII/Latin characters — filter out
-  // Burmese and other non-Latin scripts to avoid "invalid characters" errors.
-  const latinOnly = (t: string) => /^[\x00-\x7F\s]+$/.test(t);
+  const latinOnly = (t: string) => /^[\x00-\x7F\s'-.]+$/.test(t) && t.length >= 2;
   return [...new Set([...fromGlossary, ...envTerms])]
     .filter(latinOnly)
     .slice(0, 100);

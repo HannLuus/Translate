@@ -13,8 +13,9 @@ import {
   type SttResult,
 } from './speech.ts';
 
-const GEMINI_DEV_MODEL = 'gemini-2.5-flash';
-const VERTEX_MODEL = 'gemini-2.0-flash-001';
+/** Strong model for paragraph MT + meeting minutes (overridable via secrets). */
+const GEMINI_DEV_MODEL = Deno.env.get('GEMINI_DEV_MODEL') ?? 'gemini-2.5-pro';
+const VERTEX_MODEL = Deno.env.get('VERTEX_AI_MODEL') ?? 'gemini-2.5-pro';
 
 const GENERATION_CONFIG = {
   temperature: 0.1,
@@ -24,6 +25,8 @@ const GENERATION_CONFIG = {
 };
 
 const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
+/** Skip Gemini multimodal audio fallback above ~30s (too large / unreliable). */
+const GEMINI_AUDIO_FALLBACK_MAX_BYTES = 16000 * 30 * 2;
 
 function isConfidenceRoutingEnabled(): boolean {
   const flag = Deno.env.get('CONFIDENCE_ROUTING');
@@ -52,10 +55,14 @@ const AUDIO_INTERPRET_SYSTEM =
   '  {"burmese":"<literal transcript>","english":"<interpreted meaning>"}';
 
 const BURMESE_TO_ENGLISH_SYSTEM =
-  'You are a live interpreter. Translate the Burmese to natural, fluent English.\n\n' +
-  'Rules: Use complete, well-formed sentences. Preserve tone and connotation (formal, casual, question, etc.). ' +
-  'If the current Burmese is a fragment or mid-sentence, combine it with the recent context to produce one coherent English sentence where possible. ' +
-  'Output only the translation, no explanations or brackets.';
+  'You are a professional Burmese-to-English meeting interpreter. You receive a complete Burmese passage ' +
+  '(typically up to a few minutes of speech from a rolling meeting segment).\n\n' +
+  'Rules:\n' +
+  '- Translate into natural, fluent English paragraphs that preserve meaning, tone, and register.\n' +
+  '- Burmese is SOV: complete thoughts often end with the verb — translate the full passage as a unit, not word-by-word fragments.\n' +
+  '- Use prior conversation context only to resolve pronouns/names continuity; do not invent content absent from the current Burmese.\n' +
+  '- Fix obvious STT punctuation issues silently; do not add speakers or topics that were not said.\n' +
+  '- Output ONLY the English translation, no explanations or brackets.';
 
 const ENGLISH_TO_BURMESE_SYSTEM =
   'You are an experienced English-to-Burmese conference interpreter working in a live meeting. ' +
@@ -134,11 +141,11 @@ function buildUserMessage(
   }
 
   if (meetingContextStr?.trim()) {
-    parts.push(`Recent context (prior English translation): ${meetingContextStr.trim()}`);
+    parts.push(`Meeting briefing & glossary:\n${meetingContextStr.trim()}`);
   }
 
   if (parts.length === 0) return trimmed;
-  return parts.join('\n\n') + `\n\nCurrent Burmese to translate: ${trimmed}`;
+  return parts.join('\n\n') + `\n\nCurrent Burmese passage to translate:\n${trimmed}`;
 }
 
 function buildTranslationContext(
@@ -428,6 +435,10 @@ export async function transcribeAndTranslateAudio(
     }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
+    if (audioBytes.length > GEMINI_AUDIO_FALLBACK_MAX_BYTES) {
+      console.warn('[interpret] STT failed on long segment; skipping Gemini audio fallback:', reason);
+      throw err instanceof Error ? err : new Error(reason);
+    }
     console.warn('[interpret] Burmese Speech API path failed, falling back to Gemini audio:', reason);
 
     try {
@@ -461,37 +472,89 @@ export async function transcribeAndTranslateAudio(
   };
 }
 
-const CLEAN_AND_SUMMARIZE_SYSTEM =
-  'You are a meeting transcript editor and summarizer. You receive a raw live-interpretation transcript and optional meeting context (glossary, briefing).\n\n' +
+const MEETING_MINUTES_SYSTEM =
+  'You are an expert meeting secretary. You receive a bilingual Burmese–English interpretation transcript from a real meeting ' +
+  '(segmented rolls of speech that were translated with ~3 minute lag). Your job is to reconstruct how the meeting actually unfolded.\n\n' +
+  'Do NOT produce a list of disconnected patches. Write a clear chronological meeting record a participant could follow.\n\n' +
   'TASKS:\n' +
-  '1. CLEAN: Correct the transcript using the meeting context. Fix misinterpreted terms (e.g. if the context says the company sells tractors, do not leave in medicine or unrelated terms that were likely misheard). Fix names and acronyms using the glossary. Keep the rest of the content intact; only correct clear errors.\n' +
-  '2. SUMMARIZE: Write a short meeting summary (2–4 sentences) and 3–5 key points.\n\n' +
-  'OUTPUT: Reply with ONLY valid JSON, no markdown or extra text:\n' +
-  '{"cleanedTranscript":"<full cleaned transcript>","summary":"<short summary>","keyPoints":["<point 1>","<point 2>",...]}';
+  '1. executiveSummary: 3–6 sentences capturing purpose and outcomes.\n' +
+  '2. chronologicalRecord: prose organized by topic in the order discussed (use short headings). Correct clear glossary/name errors using meeting context. Keep substance; remove STT/MT noise.\n' +
+  '3. decisions: concrete decisions stated or clearly agreed.\n' +
+  '4. actionItems: next steps with owner when stated (otherwise omit owner).\n' +
+  '5. openQuestions: unresolved questions or follow-ups.\n' +
+  '6. keyPoints: 3–8 bullets of the most important takeaways.\n\n' +
+  'OUTPUT: Reply with ONLY valid JSON, no markdown:\n' +
+  '{"executiveSummary":"...","chronologicalRecord":"...","decisions":["..."],"actionItems":["..."],"openQuestions":["..."],"keyPoints":["..."],' +
+  '"cleanedTranscript":"<same as chronologicalRecord>","summary":"<same as executiveSummary>"}';
 
-const MAX_TRANSCRIPT_CHARS = 60_000;
+const MAX_TRANSCRIPT_CHARS = 120_000;
 
-export async function cleanTranscriptAndSummarize(
+export type MeetingSegmentInput = {
+  burmese?: string;
+  english: string;
+  segmentIndex?: number;
+};
+
+export type MeetingMinutesResult = {
+  executiveSummary: string;
+  chronologicalRecord: string;
+  decisions: string[];
+  actionItems: string[];
+  openQuestions: string[];
+  keyPoints: string[];
+  cleanedTranscript: string;
+  summary: string;
+};
+
+function asStringArray(v: unknown, max = 20): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((p): p is string => typeof p === 'string' && p.trim().length > 0).map((s) => s.trim()).slice(0, max);
+}
+
+export async function generateMeetingMinutes(
   transcript: string,
   meetingContext?: string | null,
-): Promise<{ cleanedTranscript: string; summary: string; keyPoints: string[] }> {
+  segments?: MeetingSegmentInput[] | null,
+): Promise<MeetingMinutesResult> {
   const trimmed = transcript?.trim() ?? '';
-  if (!trimmed) {
-    return { cleanedTranscript: '', summary: '', keyPoints: [] };
+  const segmentBlock = (segments ?? [])
+    .filter((s) => s?.english?.trim())
+    .map((s, i) => {
+      const idx = s.segmentIndex ?? i + 1;
+      const my = s.burmese?.trim() ? `\n[Burmese]: ${s.burmese.trim()}` : '';
+      return `--- Segment ${idx} ---\n[English]: ${s.english.trim()}${my}`;
+    })
+    .join('\n\n');
+
+  const source = segmentBlock || trimmed;
+  if (!source) {
+    return {
+      executiveSummary: '',
+      chronologicalRecord: '',
+      decisions: [],
+      actionItems: [],
+      openQuestions: [],
+      keyPoints: [],
+      cleanedTranscript: '',
+      summary: '',
+    };
   }
 
-  const truncated = trimmed.length > MAX_TRANSCRIPT_CHARS;
-  const toSend = truncated ? trimmed.slice(-MAX_TRANSCRIPT_CHARS) : trimmed;
+  const truncated = source.length > MAX_TRANSCRIPT_CHARS;
+  const toSend = truncated ? source.slice(-MAX_TRANSCRIPT_CHARS) : source;
 
-  let systemPrompt = CLEAN_AND_SUMMARIZE_SYSTEM;
+  let systemPrompt = MEETING_MINUTES_SYSTEM;
   if (meetingContext?.trim()) {
-    systemPrompt += '\n\nMEETING CONTEXT (use this to correct terms and stay on topic):\n---\n' + meetingContext.trim() + '\n---';
+    systemPrompt += '\n\nMEETING CONTEXT (glossary / briefing — use to correct names and terms):\n---\n' +
+      meetingContext.trim() + '\n---';
   }
   if (truncated) {
-    systemPrompt += '\n\nThe transcript you receive is the final portion of a long meeting; the beginning was omitted due to length. Clean and summarize based on what you receive.';
+    systemPrompt += '\n\nNOTE: Only the later portion of a long meeting was provided due to length limits.';
   }
 
-  const userMessage = `Process this meeting transcript. Clean it using the meeting context, then provide the summary and key points. Output only the JSON object.\n\nTRANSCRIPT:\n\n${toSend}`;
+  const userMessage =
+    'Produce structured meeting minutes from this interpreted meeting transcript. ' +
+    'Reflect the real flow of discussion. Output only the JSON object.\n\nTRANSCRIPT:\n\n' + toSend;
   const contents: VertexContent[] = [{ role: 'user', parts: [{ text: userMessage }] }];
 
   const maxAttempts = 1 + RETRY_DELAYS_MS.length;
@@ -510,37 +573,69 @@ export async function cleanTranscriptAndSummarize(
         throw new Error(`Vertex blocked: ${blockReason}`);
       }
       if (finishReason === 'MAX_TOKENS' && raw) {
-        console.warn('[clean-and-summarize] Response truncated (MAX_TOKENS); returning partial result');
+        console.warn('[meeting-minutes] Response truncated (MAX_TOKENS); returning partial result');
       } else if (finishReason && finishReason !== 'STOP') {
         throw new Error(`Vertex stopped with reason: ${finishReason}`);
       }
       if (!raw) {
-        const fallbackCleaned = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
-        return { cleanedTranscript: fallbackCleaned, summary: 'Summary unavailable.', keyPoints: [] };
+        const fallback = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : source;
+        return {
+          executiveSummary: 'Summary unavailable.',
+          chronologicalRecord: fallback,
+          decisions: [],
+          actionItems: [],
+          openQuestions: [],
+          keyPoints: [],
+          cleanedTranscript: fallback,
+          summary: 'Summary unavailable.',
+        };
       }
 
       try {
         const json = raw.replace(/^```[a-z]*\n?/i, '').replace(/```$/g, '').trim();
-        const parsed = JSON.parse(json) as { cleanedTranscript?: string; summary?: string; keyPoints?: string[] };
-        let cleaned = typeof parsed.cleanedTranscript === 'string' ? parsed.cleanedTranscript.trim() : toSend;
+        const parsed = JSON.parse(json) as Record<string, unknown>;
+        let chronological =
+          (typeof parsed.chronologicalRecord === 'string' && parsed.chronologicalRecord.trim()) ||
+          (typeof parsed.cleanedTranscript === 'string' && parsed.cleanedTranscript.trim()) ||
+          toSend;
         if (truncated) {
-          cleaned = '[Earlier part of the meeting was omitted due to length.]\n\n' + cleaned;
+          chronological = '[Earlier part of the meeting was omitted due to length.]\n\n' + chronological;
         }
-        const summary =
-          typeof parsed.summary === 'string'
-            ? parsed.summary.trim()
-            : finishReason === 'MAX_TOKENS'
-              ? 'Summary may be incomplete (output was truncated).'
-              : 'Summary unavailable.';
+        const executive =
+          (typeof parsed.executiveSummary === 'string' && parsed.executiveSummary.trim()) ||
+          (typeof parsed.summary === 'string' && parsed.summary.trim()) ||
+          (finishReason === 'MAX_TOKENS'
+            ? 'Summary may be incomplete (output was truncated).'
+            : 'Summary unavailable.');
+        const decisions = asStringArray(parsed.decisions);
+        const actionItems = asStringArray(parsed.actionItems);
+        const openQuestions = asStringArray(parsed.openQuestions);
+        const keyPoints = asStringArray(parsed.keyPoints, 10);
         return {
-          cleanedTranscript: cleaned,
-          summary,
-          keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.filter((p): p is string => typeof p === 'string').slice(0, 10) : [],
+          executiveSummary: executive,
+          chronologicalRecord: chronological,
+          decisions,
+          actionItems,
+          openQuestions,
+          keyPoints: keyPoints.length ? keyPoints : [...decisions, ...actionItems].slice(0, 8),
+          cleanedTranscript: chronological,
+          summary: executive,
         };
       } catch {
-        const fallback = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : trimmed;
-        const summary = finishReason === 'MAX_TOKENS' ? 'Summary unavailable (response was truncated).' : 'Summary unavailable.';
-        return { cleanedTranscript: fallback, summary, keyPoints: [] };
+        const fallback = truncated ? '[Earlier part omitted due to length.]\n\n' + toSend : source;
+        const summary = finishReason === 'MAX_TOKENS'
+          ? 'Summary unavailable (response was truncated).'
+          : 'Summary unavailable.';
+        return {
+          executiveSummary: summary,
+          chronologicalRecord: fallback,
+          decisions: [],
+          actionItems: [],
+          openQuestions: [],
+          keyPoints: [],
+          cleanedTranscript: fallback,
+          summary,
+        };
       }
     } catch (e) {
       lastError = e;
@@ -549,6 +644,14 @@ export async function cleanTranscriptAndSummarize(
   }
 
   throw lastError;
+}
+
+/** @deprecated Use generateMeetingMinutes */
+export async function cleanTranscriptAndSummarize(
+  transcript: string,
+  meetingContext?: string | null,
+): Promise<MeetingMinutesResult> {
+  return generateMeetingMinutes(transcript, meetingContext, null);
 }
 
 export async function translateWithGemini(

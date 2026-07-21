@@ -1,6 +1,8 @@
 # Burmese–English Interpreter PWA
 
-Real-time Burmese-to-English interpreter with three capture modes: **Desktop (Tab Audio)**, **Rooted Android (loopback)**, and **Face-to-Face (mic)**.
+Burmese-to-English meeting interpreter with three capture modes: **Desktop (Tab Audio)**, **Rooted Android (loopback)**, and **Face-to-Face (mic)**.
+
+**Batch segments (default):** audio is captured continuously and closed every ~**3 minutes** (15 s overlap). Each segment is transcribed (ElevenLabs Scribe) and translated as a full passage (Gemini 2.5 Pro), then stitched in the UI — typically a few minutes behind live speech, by design, for better Burmese SOV accuracy. After the meeting, **Generate meeting minutes** builds a chronological record, decisions, and action items.
 
 ## Quick start
 
@@ -63,7 +65,7 @@ Backend URL and anon key are defined in `my-interpreter/src/api.ts`; override wi
 
 ## Environment
 
-- **Supabase Edge Functions:** Set secrets: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `VERTEX_AI_REGION` (e.g. us-central1). Service account needs Vertex AI User role for Gemini.
+- **Supabase Edge Functions:** Set secrets: `GOOGLE_APPLICATION_CREDENTIALS_JSON`, `VERTEX_AI_REGION` (e.g. us-central1). Service account needs Vertex AI User role for Gemini. Optional: `VERTEX_AI_MODEL` / `GEMINI_DEV_MODEL` (default `gemini-2.5-pro`), `ELEVENLABS_API_KEY`, `ELEVENLABS_STT_MODEL=scribe_v2`. After deploy, ensure the VPS reverse proxy read timeout is ≥ **300s** (segment jobs).
 - **Local server (optional):** `server/.env` — see `server/.env.example`. Used only for running the Node backend locally (`cd server && npm start`).
 - **my-interpreter:** Backend URL is in `my-interpreter/src/api.ts` (`SUPABASE_PROJECT_URL` / `API_BASE`). Override with `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in Vercel.
 

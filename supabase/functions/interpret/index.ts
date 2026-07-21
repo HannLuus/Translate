@@ -7,13 +7,11 @@ import type { TermLockMap } from '../_shared/terminology.ts';
 function decodeBase64Header(raw: string | null): string | null {
   if (!raw?.trim()) return null;
   try {
-    // Try base64 decode first (new format)
     const binary = atob(raw);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return new TextDecoder().decode(bytes);
   } catch {
-    // Fall back to legacy URI-encoded format
     try {
       return decodeURIComponent(raw);
     } catch {
@@ -22,17 +20,20 @@ function decodeBase64Header(raw: string | null): string | null {
   }
 }
 
+function parseTermLock(raw: unknown): TermLockMap {
+  if (!raw || typeof raw !== 'object') return {};
+  const lock: TermLockMap = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'string' && k.trim()) lock[k.toLowerCase()] = v;
+  }
+  return lock;
+}
+
 function parseTermLockHeader(raw: string | null): TermLockMap {
   const decoded = decodeBase64Header(raw);
   if (!decoded) return {};
-
   try {
-    const parsed = JSON.parse(decoded) as Record<string, unknown>;
-    const lock: TermLockMap = {};
-    for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === 'string' && k.trim()) lock[k.toLowerCase()] = v;
-    }
-    return lock;
+    return parseTermLock(JSON.parse(decoded));
   } catch {
     return {};
   }
@@ -40,31 +41,40 @@ function parseTermLockHeader(raw: string | null): TermLockMap {
 
 type RecentContextPair = { burmese: string; english: string };
 
+function parseRecentContext(raw: unknown): RecentContextPair[] {
+  if (!Array.isArray(raw)) return [];
+  const pairs: RecentContextPair[] = [];
+  for (const item of raw) {
+    if (
+      item &&
+      typeof item === 'object' &&
+      typeof (item as RecentContextPair).burmese === 'string' &&
+      typeof (item as RecentContextPair).english === 'string'
+    ) {
+      pairs.push({
+        burmese: (item as RecentContextPair).burmese,
+        english: (item as RecentContextPair).english,
+      });
+    }
+  }
+  return pairs;
+}
+
 function parseRecentContextHeader(raw: string | null): RecentContextPair[] {
   const decoded = decodeBase64Header(raw);
   if (!decoded) return [];
-
   try {
-    const parsed = JSON.parse(decoded) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const pairs: RecentContextPair[] = [];
-    for (const item of parsed) {
-      if (
-        item &&
-        typeof item === 'object' &&
-        typeof (item as RecentContextPair).burmese === 'string' &&
-        typeof (item as RecentContextPair).english === 'string'
-      ) {
-        pairs.push({
-          burmese: (item as RecentContextPair).burmese,
-          english: (item as RecentContextPair).english,
-        });
-      }
-    }
-    return pairs;
+    return parseRecentContext(JSON.parse(decoded));
   } catch {
     return [];
   }
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
 }
 
 Deno.serve(async (req) => {
@@ -74,48 +84,86 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
 
   try {
-    const arrayBuffer = await req.arrayBuffer();
-    const audioBytes = new Uint8Array(arrayBuffer);
+    const contentType = req.headers.get('content-type') ?? '';
+    let audioBytes: Uint8Array;
+    let meetingContext: string | null = null;
+    let termLock: TermLockMap = {};
+    let recentContext: RecentContextPair[] = [];
+
+    if (contentType.includes('application/json')) {
+      const body = await req.json() as {
+        audioBase64?: string;
+        meetingContext?: string | null;
+        termLock?: unknown;
+        recentContext?: unknown;
+        mode?: string;
+      };
+      if (!body?.audioBase64 || typeof body.audioBase64 !== 'string') {
+        return new Response(
+          JSON.stringify({ error: 'JSON body must include audioBase64 (PCM 16 kHz mono)' }),
+          { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        );
+      }
+      audioBytes = base64ToBytes(body.audioBase64);
+      meetingContext = typeof body.meetingContext === 'string' ? body.meetingContext : null;
+      termLock = parseTermLock(body.termLock);
+      recentContext = parseRecentContext(body.recentContext);
+    } else {
+      const arrayBuffer = await req.arrayBuffer();
+      audioBytes = new Uint8Array(arrayBuffer);
+      meetingContext = decodeBase64Header(req.headers.get('x-meeting-context'));
+      termLock = parseTermLockHeader(req.headers.get('x-term-lock'));
+      recentContext = parseRecentContextHeader(req.headers.get('x-recent-context'));
+    }
 
     if (!audioBytes.length) {
-      // Silent / empty capture window (common in desktop audio mode during pauses).
-      // Treat as a graceful no-op rather than a 400 so it doesn't spam the console.
       return new Response(
         JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null, diagnostics: null, termLock: {} }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
-    const meetingContextRaw = req.headers.get('x-meeting-context');
-    const meetingContext = decodeBase64Header(meetingContextRaw);
-
-    const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock } =
+    const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock: updatedLock } =
       await transcribeAndTranslateAudio(
         audioBytes,
         meetingContext,
-        parseTermLockHeader(req.headers.get('x-term-lock')),
-        parseRecentContextHeader(req.headers.get('x-recent-context')),
+        termLock,
+        recentContext,
       );
 
     const diagnostics = createDiagnostics(startedAt, partialDiagnostics, burmeseText, englishText);
     logInterpretMetrics(diagnostics);
 
-    if (!englishText) {
+    if (!englishText && !burmeseText) {
       return new Response(
-        JSON.stringify({ burmeseText: '', englishText: '', audioBase64: null, diagnostics, termLock }),
+        JSON.stringify({
+          burmeseText: '',
+          englishText: '',
+          audioBase64: null,
+          diagnostics,
+          termLock: updatedLock,
+        }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       );
     }
 
     let audioBase64: string | null = null;
-    try {
-      audioBase64 = await synthesizeSpeech(englishText, 'en-US');
-    } catch (ttsErr) {
-      console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
+    if (englishText) {
+      try {
+        audioBase64 = await synthesizeSpeech(englishText, 'en-US');
+      } catch (ttsErr) {
+        console.warn('[interpret] TTS failed, returning translation without audio:', ttsErr);
+      }
     }
 
     return new Response(
-      JSON.stringify({ burmeseText, englishText, audioBase64, diagnostics, termLock }),
+      JSON.stringify({
+        burmeseText,
+        englishText,
+        audioBase64,
+        diagnostics,
+        termLock: updatedLock,
+      }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
     );
   } catch (err) {

@@ -7,7 +7,20 @@ import type { SttAlternative, SttResult } from './sttTypes.ts';
 export type { SttAlternative, SttResult } from './sttTypes.ts';
 
 const SPEECH_REGION = 'asia-southeast1';
-const MIN_AUDIO_BYTES = 16000 * 0.5 * 2;
+const SAMPLE_RATE_HZ = 16000;
+const BYTES_PER_SAMPLE = 2;
+const BYTES_PER_SECOND = SAMPLE_RATE_HZ * BYTES_PER_SAMPLE;
+const MIN_AUDIO_BYTES = SAMPLE_RATE_HZ * 0.5 * BYTES_PER_SAMPLE;
+
+/**
+ * Google Speech-to-Text v2 synchronous `:recognize` rejects audio longer than 60s
+ * ("Audio can be of a maximum of 60 seconds."). Meeting segments are ~180s, so we
+ * chunk before calling Google. Stay under the hard cap with a small overlap.
+ */
+const GOOGLE_RECOGNIZE_MAX_SECONDS = 55;
+const GOOGLE_CHUNK_OVERLAP_SECONDS = 1.5;
+const GOOGLE_MAX_CHUNK_BYTES = GOOGLE_RECOGNIZE_MAX_SECONDS * BYTES_PER_SECOND;
+const GOOGLE_OVERLAP_BYTES = Math.floor(GOOGLE_CHUNK_OVERLAP_SECONDS * BYTES_PER_SECOND);
 
 /** Minimum confidence to skip second-pass STT refinement. */
 export const STT_CONFIDENCE_THRESHOLD = 0.72;
@@ -129,6 +142,60 @@ async function recognizeAudioDetailed(
   return { transcript: '', confidence: 0, alternatives: [], model: 'none' };
 }
 
+/** Split long PCM and call sync Google recognize per chunk (≤60s API limit). */
+async function recognizePcmDetailed(
+  audioBytes: Uint8Array,
+  languageCodes: string[],
+  phraseHints?: GlossaryHint[],
+  preferredModel?: string,
+): Promise<SttResult> {
+  if (audioBytes.length <= GOOGLE_MAX_CHUNK_BYTES) {
+    return recognizeAudioDetailed(
+      bytesToBase64(audioBytes),
+      languageCodes,
+      phraseHints,
+      preferredModel,
+    );
+  }
+
+  const step = Math.max(GOOGLE_MAX_CHUNK_BYTES - GOOGLE_OVERLAP_BYTES, MIN_AUDIO_BYTES);
+  const transcripts: string[] = [];
+  const confidences: number[] = [];
+  const alternatives: SttAlternative[] = [];
+  let model = 'none';
+
+  for (let start = 0; start < audioBytes.length; start += step) {
+    const end = Math.min(start + GOOGLE_MAX_CHUNK_BYTES, audioBytes.length);
+    const chunk = audioBytes.subarray(start, end);
+    if (chunk.length < MIN_AUDIO_BYTES) break;
+
+    const part = await recognizeAudioDetailed(
+      bytesToBase64(chunk),
+      languageCodes,
+      phraseHints,
+      preferredModel,
+    );
+    if (part.transcript) {
+      transcripts.push(part.transcript);
+      confidences.push(part.confidence);
+      alternatives.push(...part.alternatives);
+      model = part.model;
+    }
+    if (end >= audioBytes.length) break;
+  }
+
+  if (transcripts.length === 0) {
+    return { transcript: '', confidence: 0, alternatives: [], model };
+  }
+
+  return {
+    transcript: transcripts.join(' ').replace(/\s+/g, ' ').trim(),
+    confidence: confidences.reduce((a, b) => a + b, 0) / confidences.length,
+    alternatives: alternatives.slice(0, 8),
+    model,
+  };
+}
+
 export async function transcribeBurmeseDetailed(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
@@ -150,8 +217,7 @@ export async function transcribeBurmeseDetailed(
     }
   }
 
-  const audioBase64 = bytesToBase64(audioBytes);
-  return recognizeAudioDetailed(audioBase64, ['my-MM'], hints, options?.preferredModel);
+  return recognizePcmDetailed(audioBytes, ['my-MM'], hints, options?.preferredModel);
 }
 
 /** Second-pass refinement: alternate provider/model for low-confidence segments. */
@@ -163,10 +229,13 @@ export async function refineBurmeseTranscription(
   const usedElevenLabs = primary.model === 'elevenlabs_scribe';
 
   if (usedElevenLabs) {
-    const audioBase64 = bytesToBase64(audioBytes);
-    const hints = parseGlossaryHints(meetingContext);
-    const refined = await recognizeAudioDetailed(audioBase64, ['my-MM'], hints, 'chirp_3');
-    if (refined.transcript && refined.confidence >= primary.confidence) return refined;
+    try {
+      const hints = parseGlossaryHints(meetingContext);
+      const refined = await recognizePcmDetailed(audioBytes, ['my-MM'], hints, 'chirp_3');
+      if (refined.transcript && refined.confidence >= primary.confidence) return refined;
+    } catch (err) {
+      console.warn('[STT] Google refine after ElevenLabs failed; keeping primary:', err);
+    }
     return primary;
   }
 
@@ -179,21 +248,25 @@ export async function refineBurmeseTranscription(
     }
   }
 
-  const alternateModel = primary.model === 'chirp_3' ? 'chirp_2' : 'chirp_3';
-  const refined = await transcribeBurmeseDetailed(audioBytes, meetingContext, {
-    preferredModel: alternateModel,
-    forceGoogle: true,
-  });
+  try {
+    const alternateModel = primary.model === 'chirp_3' ? 'chirp_2' : 'chirp_3';
+    const refined = await transcribeBurmeseDetailed(audioBytes, meetingContext, {
+      preferredModel: alternateModel,
+      forceGoogle: true,
+    });
 
-  if (!refined.transcript) return primary;
-  if (refined.confidence >= primary.confidence) return refined;
+    if (!refined.transcript) return primary;
+    if (refined.confidence >= primary.confidence) return refined;
 
-  if (refined.alternatives.length > 0 && primary.confidence < STT_CONFIDENCE_THRESHOLD) {
-    return {
-      ...primary,
-      confidence: Math.max(primary.confidence, refined.confidence * 0.95),
-      alternatives: [...primary.alternatives, ...refined.alternatives].slice(0, 5),
-    };
+    if (refined.alternatives.length > 0 && primary.confidence < STT_CONFIDENCE_THRESHOLD) {
+      return {
+        ...primary,
+        confidence: Math.max(primary.confidence, refined.confidence * 0.95),
+        alternatives: [...primary.alternatives, ...refined.alternatives].slice(0, 5),
+      };
+    }
+  } catch (err) {
+    console.warn('[STT] Google alternate-model refine failed; keeping primary:', err);
   }
 
   return primary;
@@ -219,7 +292,6 @@ export async function transcribeEnglish(audioBytes: Uint8Array): Promise<string>
     }
   }
 
-  const audioBase64 = bytesToBase64(audioBytes);
-  const result = await recognizeAudioDetailed(audioBase64, ['en-US']);
+  const result = await recognizePcmDetailed(audioBytes, ['en-US']);
   return result.transcript;
 }

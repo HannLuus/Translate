@@ -823,7 +823,7 @@ function App() {
     : translationSegments.slice(-6);
 
   return (
-    <div className="app">
+    <div className={`app${active ? ' app--session' : ''}`}>
       {updateAvailable ? (
         <div className="app__update-banner" role="status">
           <span>New app version ready.</span>
@@ -832,6 +832,7 @@ function App() {
           </button>
         </div>
       ) : null}
+
       <header className="app__header">
         <div className="app__title-row">
           <h1 className="app__title">Burmese–English Interpreter</h1>
@@ -841,20 +842,20 @@ function App() {
           >
             {appVersionLabel}
           </p>
+          <p className="app__backend-status" aria-live="polite">
+            {backendStatus === 'ok' && (
+              <span className="app__backend-ok">Backend connected</span>
+            )}
+            {backendStatus === 'unreachable' && (
+              <span className="app__backend-unreachable">
+                Backend unreachable{backendError ? `: ${backendError}` : ''}.
+              </span>
+            )}
+            {backendStatus === 'unknown' && (
+              <span className="app__backend-unknown">Checking backend…</span>
+            )}
+          </p>
         </div>
-        <p className="app__backend-status" aria-live="polite">
-          {backendStatus === 'ok' && (
-            <span className="app__backend-ok">Backend connected</span>
-          )}
-          {backendStatus === 'unreachable' && (
-            <span className="app__backend-unreachable">
-              Backend unreachable{backendError ? `: ${backendError}` : ''}.
-            </span>
-          )}
-          {backendStatus === 'unknown' && (
-            <span className="app__backend-unknown">Checking backend…</span>
-          )}
-        </p>
         <PermissionChecker
           permissionState={permissionState}
           onDismiss={() => {}}
@@ -863,351 +864,357 @@ function App() {
       </header>
 
       <main className="app__main">
-        <PlatformSelector
-          mode={mode}
-          onModeChange={setMode}
-          loopbackDeviceId={loopbackDeviceId}
-          onLoopbackDeviceIdChange={setLoopbackDeviceId}
-          disabled={active}
-        />
+        <aside className="app__sidebar">
+          <div className="app__sidebar-scroll">
+            <PlatformSelector
+              mode={mode}
+              onModeChange={setMode}
+              loopbackDeviceId={loopbackDeviceId}
+              onLoopbackDeviceIdChange={setLoopbackDeviceId}
+              disabled={active}
+            />
 
-        <label className="app__tts-toggle app__tts-toggle--testing" title="Keep full script on screen for the whole session so you can compare and give feedback.">
-          <input
-            type="checkbox"
-            checked={testingMode}
-            onChange={(e) => setTestingMode(e.target.checked)}
-          />
-          <span>Testing mode — keep full script</span>
-        </label>
+            <label className="app__tts-toggle app__tts-toggle--testing" title="Keep full script on screen for the whole session so you can compare and give feedback.">
+              <input
+                type="checkbox"
+                checked={testingMode}
+                onChange={(e) => setTestingMode(e.target.checked)}
+              />
+              <span>Testing mode — keep full script</span>
+            </label>
 
-        {!active && (
-          <ScenarioProfilePanel
-            profiles={profiles}
-            activeProfileId={activeProfileId}
-            disabled={active}
-            useGlossaryAndBriefing={useGlossaryAndBriefing}
-            onUseGlossaryAndBriefingChange={setUseGlossaryAndBriefing}
-            onProfilesChange={setProfiles}
-            onActiveProfileIdChange={setActiveProfileId}
-          />
-        )}
+            {!active && (
+              <ScenarioProfilePanel
+                profiles={profiles}
+                activeProfileId={activeProfileId}
+                disabled={active}
+                useGlossaryAndBriefing={useGlossaryAndBriefing}
+                onUseGlossaryAndBriefingChange={setUseGlossaryAndBriefing}
+                onProfilesChange={setProfiles}
+                onActiveProfileIdChange={setActiveProfileId}
+              />
+            )}
 
-        {mode === 'desktop' && !active && (
-          <p className="app__desktop-hint" role="status">
-            When you click Start, choose the Teams tab (or window) and check <strong>Share tab audio</strong> so the app can hear the meeting.
-            Translation arrives in ~{Math.round(SEGMENT_MS / 60000)}-minute segments (not live).
-          </p>
-        )}
-
-        {!active && (
-          <p className="app__desktop-hint" role="status">
-            Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
-          </p>
-        )}
-
-        <div className="app__controls">
-          {!active ? (
-            <motion.button
-              type="button"
-              className="app__btn app__btn--start"
-              onClick={startInterpretation}
-              whileTap={{ scale: 0.98 }}
-            >
-              Start interpretation
-            </motion.button>
-          ) : (
-            <motion.button
-              type="button"
-              className="app__btn app__btn--stop"
-              onClick={stopInterpretation}
-              whileTap={{ scale: 0.98 }}
-            >
-              Stop
-            </motion.button>
-          )}
-        </div>
-
-        <label className="app__tts-toggle app__tts-toggle--interpret">
-          <input
-            type="checkbox"
-            checked={playTtsEnabled}
-            onChange={(e) => setPlayTtsEnabled(e.target.checked)}
-          />
-          <span>Play translation aloud</span>
-        </label>
-
-        <WavizVisualizer
-          stream={captureStream}
-          active={active}
-        />
-
-        {active && (
-          <div className="app__interpret-status">
-            <p className="app__interpret-hint" role="status">
-              {interpretStatus === 'listening' && (
-                <>Recording continuously · English updates after each ~{Math.round(SEGMENT_MS / 60000)}-minute segment. Nothing is dropped if translation lags.</>
-              )}
-              {interpretStatus === 'processing' && (
-                <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
-              )}
-            </p>
-            {sessionStatusLine && (
-              <p className="app__interpret-hint app__interpret-hint--detail" role="status">
-                {sessionStatusLine}
+            {mode === 'desktop' && !active && (
+              <p className="app__desktop-hint" role="status">
+                When you click Start, choose the Teams tab (or window) and check <strong>Share tab audio</strong> so the app can hear the meeting.
+                Translation arrives in ~{Math.round(SEGMENT_MS / 60000)}-minute segments (not live).
               </p>
             )}
-          </div>
-        )}
 
-        {failedSegmentLocalId != null && (
-          <div className="app__clean-error">
-            <p>A segment failed. You can retry it without restarting the meeting.</p>
-            <button type="button" className="app__btn app__btn--secondary" onClick={retryFailedSegment}>
-              Retry failed segment
-            </button>
-          </div>
-        )}
+            {!active && (
+              <p className="app__desktop-hint" role="status">
+                Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
+              </p>
+            )}
 
-        {!active && (
-          <p className="app__script-hint" role="status">
-            Starting a new session clears the script.
-          </p>
-        )}
-
-        <ConversationView
-          translationText={visibleSegments.map((s) => s.text).join('\n')}
-          isPlayingTts={isPlayingTts}
-          testingMode={testingMode}
-          segments={visibleSegments}
-        />
-
-        {translationSegments.length > 0 && !active && (
-          <div className="app__testing-actions">
-            <motion.button
-              type="button"
-              className="app__btn app__btn--start"
-              disabled={
-                minutesStatus === 'loading' ||
-                !translationSegments.some((s) => s.text.trim() !== '')
-              }
-              onClick={async () => {
-                setMinutesError(null);
-                setMinutesStatus('loading');
-                const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
-                const segmentPayload = translationSegments
-                  .filter((s) => s.text.trim())
-                  .map((s) => ({
-                    english: s.text,
-                    burmese: s.burmeseText,
-                    segmentIndex: s.segmentIndex,
-                  }));
-                const combinedContext = useGlossaryAndBriefing
-                  ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
-                  : '';
-                try {
-                  const result = await generateMeetingMinutes(
-                    fullScript || '',
-                    combinedContext || undefined,
-                    segmentPayload,
-                  );
-                  setMinutesResult(result);
-                  setMinutesStatus('success');
-                } catch (e) {
-                  const msg = e instanceof Error ? e.message : 'Meeting minutes failed';
-                  setMinutesError(msg);
-                  setMinutesStatus('error');
-                  pushErrorLog('error', `Meeting minutes: ${msg}`);
-                }
-              }}
-              whileTap={{ scale: 0.98 }}
-            >
-              {minutesStatus === 'loading' ? 'Writing minutes…' : 'Generate meeting minutes'}
-            </motion.button>
-            <motion.button
-              type="button"
-              className="app__btn app__btn--secondary"
-              disabled={minutesStatus === 'loading'}
-              onClick={() => {
-                setTranslationSegments([]);
-                setMinutesStatus('idle');
-                setMinutesResult(null);
-                setMinutesError(null);
-              }}
-              whileTap={{ scale: 0.98 }}
-            >
-              Clear script (new run)
-            </motion.button>
-          </div>
-        )}
-
-        {minutesStatus === 'error' && minutesError && (
-          <div className="app__clean-error">
-            <p>{minutesError}</p>
-            <button
-              type="button"
-              className="app__btn app__btn--secondary"
-              onClick={() => {
-                setMinutesStatus('idle');
-                setMinutesError(null);
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        {minutesStatus === 'success' && minutesResult && (
-          <div className="app__clean-result">
-            <h3 className="app__clean-result-title">Meeting minutes</h3>
-            <p className="app__clean-result-hint">
-              Structured from your bilingual segments
-              {useGlossaryAndBriefing ? ' using glossary and briefing.' : '.'}
-            </p>
-
-            <div className="app__clean-summary-wrap">
-              <label className="app__clean-label">Executive summary</label>
-              <p className="app__clean-summary">{minutesResult.executiveSummary || '(No summary)'}</p>
+            <div className="app__controls">
+              {!active ? (
+                <motion.button
+                  type="button"
+                  className="app__btn app__btn--start"
+                  onClick={startInterpretation}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Start interpretation
+                </motion.button>
+              ) : (
+                <motion.button
+                  type="button"
+                  className="app__btn app__btn--stop"
+                  onClick={stopInterpretation}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Stop
+                </motion.button>
+              )}
             </div>
 
-            <div className="app__clean-transcript-wrap">
-              <label className="app__clean-label">Chronological record</label>
-              <div className="app__clean-transcript" role="document">
-                {minutesResult.chronologicalRecord || '(Empty)'}
-              </div>
-            </div>
+            <label className="app__tts-toggle app__tts-toggle--interpret">
+              <input
+                type="checkbox"
+                checked={playTtsEnabled}
+                onChange={(e) => setPlayTtsEnabled(e.target.checked)}
+              />
+              <span>Play translation aloud</span>
+            </label>
 
-            {minutesResult.decisions.length > 0 && (
-              <div className="app__clean-summary-wrap">
-                <label className="app__clean-label">Decisions</label>
-                <ul className="app__clean-keypoints">
-                  {minutesResult.decisions.map((point, i) => (
-                    <li key={`d-${i}`}>{point}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {minutesResult.actionItems.length > 0 && (
-              <div className="app__clean-summary-wrap">
-                <label className="app__clean-label">Action items</label>
-                <ul className="app__clean-keypoints">
-                  {minutesResult.actionItems.map((point, i) => (
-                    <li key={`a-${i}`}>{point}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {minutesResult.openQuestions.length > 0 && (
-              <div className="app__clean-summary-wrap">
-                <label className="app__clean-label">Open questions</label>
-                <ul className="app__clean-keypoints">
-                  {minutesResult.openQuestions.map((point, i) => (
-                    <li key={`q-${i}`}>{point}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {minutesResult.keyPoints && minutesResult.keyPoints.length > 0 && (
-              <div className="app__clean-summary-wrap">
-                <label className="app__clean-label">Key points</label>
-                <ul className="app__clean-keypoints">
-                  {minutesResult.keyPoints.map((point, i) => (
-                    <li key={`k-${i}`}>{point}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="app__btn app__btn--secondary app__clean-download"
-              onClick={() => {
-                const blob = new Blob([formatMinutesDownload(minutesResult)], { type: 'text/plain;charset=utf-8' });
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = `meeting-minutes-${new Date().toISOString().slice(0, 10)}.txt`;
-                a.click();
-                URL.revokeObjectURL(a.href);
-              }}
-            >
-              Download meeting minutes
-            </button>
-            <button
-              type="button"
-              className="app__btn app__btn--secondary"
-              onClick={() => {
-                setMinutesStatus('idle');
-                setMinutesResult(null);
-              }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-
-        <div className="app__response">
-          <p className="app__response-hint" aria-hidden="true">
-            Speak in English — translation appears in Burmese for the other person.
-          </p>
-          <label className="app__tts-toggle app__tts-toggle--response">
-            <input
-              type="checkbox"
-              checked={playResponseTtsEnabled}
-              onChange={(e) => setPlayResponseTtsEnabled(e.target.checked)}
+            <WavizVisualizer
+              stream={captureStream}
+              active={active}
             />
-            <span>Play response aloud</span>
-          </label>
-          <ResponseButton
-            onResult={handleResponseResult}
-            onError={(e) => {
-              setError(e.message);
-              pushErrorLog('error', `Response: ${e.message}`);
-            }}
-            disabled={active}
-            playTtsEnabled={playResponseTtsEnabled}
+
+            {active && (
+              <div className="app__interpret-status">
+                <p className="app__interpret-hint" role="status">
+                  {interpretStatus === 'listening' && (
+                    <>Recording continuously · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if translation lags.</>
+                  )}
+                  {interpretStatus === 'processing' && (
+                    <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  )}
+                </p>
+                {sessionStatusLine && (
+                  <p className="app__interpret-hint app__interpret-hint--detail" role="status">
+                    {sessionStatusLine}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {failedSegmentLocalId != null && (
+              <div className="app__clean-error">
+                <p>A segment failed. You can retry it without restarting the meeting.</p>
+                <button type="button" className="app__btn app__btn--secondary" onClick={retryFailedSegment}>
+                  Retry failed segment
+                </button>
+              </div>
+            )}
+
+            {!active && (
+              <p className="app__script-hint" role="status">
+                Starting a new session clears the script.
+              </p>
+            )}
+
+            <div className="app__response">
+              <p className="app__response-hint" aria-hidden="true">
+                Speak in English — translation appears in Burmese for the other person.
+              </p>
+              <label className="app__tts-toggle app__tts-toggle--response">
+                <input
+                  type="checkbox"
+                  checked={playResponseTtsEnabled}
+                  onChange={(e) => setPlayResponseTtsEnabled(e.target.checked)}
+                />
+                <span>Play response aloud</span>
+              </label>
+              <ResponseButton
+                onResult={handleResponseResult}
+                onError={(e) => {
+                  setError(e.message);
+                  pushErrorLog('error', `Response: ${e.message}`);
+                }}
+                disabled={active}
+                playTtsEnabled={playResponseTtsEnabled}
+              />
+            </div>
+
+            <div className="app__error-log">
+              <motion.button
+                type="button"
+                className="app__btn app__btn--error-log"
+                onClick={downloadMetricsLog}
+                whileTap={{ scale: 0.98 }}
+              >
+                Download metrics log
+              </motion.button>
+              <motion.button
+                type="button"
+                className="app__btn app__btn--error-log"
+                onClick={downloadErrorLog}
+                whileTap={{ scale: 0.98 }}
+              >
+                Download error log
+              </motion.button>
+            </div>
+          </div>
+        </aside>
+
+        <section className="app__workspace" aria-label="Translation">
+          <ConversationView
+            translationText={visibleSegments.map((s) => s.text).join('\n')}
+            isPlayingTts={isPlayingTts}
+            testingMode={testingMode}
+            segments={visibleSegments}
           />
-        </div>
 
-        <div className="app__error-log">
-          <motion.button
-            type="button"
-            className="app__btn app__btn--error-log"
-            onClick={downloadMetricsLog}
-            whileTap={{ scale: 0.98 }}
-          >
-            Download metrics log
-          </motion.button>
-          <motion.button
-            type="button"
-            className="app__btn app__btn--error-log"
-            onClick={downloadErrorLog}
-            whileTap={{ scale: 0.98 }}
-          >
-            Download error log
-          </motion.button>
-        </div>
+          {translationSegments.length > 0 && !active && (
+            <div className="app__testing-actions">
+              <motion.button
+                type="button"
+                className="app__btn app__btn--start"
+                disabled={
+                  minutesStatus === 'loading' ||
+                  !translationSegments.some((s) => s.text.trim() !== '')
+                }
+                onClick={async () => {
+                  setMinutesError(null);
+                  setMinutesStatus('loading');
+                  const fullScript = translationSegments.map((s) => s.text).join('\n').trim();
+                  const segmentPayload = translationSegments
+                    .filter((s) => s.text.trim())
+                    .map((s) => ({
+                      english: s.text,
+                      burmese: s.burmeseText,
+                      segmentIndex: s.segmentIndex,
+                    }));
+                  const combinedContext = useGlossaryAndBriefing
+                    ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
+                    : '';
+                  try {
+                    const result = await generateMeetingMinutes(
+                      fullScript || '',
+                      combinedContext || undefined,
+                      segmentPayload,
+                    );
+                    setMinutesResult(result);
+                    setMinutesStatus('success');
+                  } catch (e) {
+                    const msg = e instanceof Error ? e.message : 'Meeting minutes failed';
+                    setMinutesError(msg);
+                    setMinutesStatus('error');
+                    pushErrorLog('error', `Meeting minutes: ${msg}`);
+                  }
+                }}
+                whileTap={{ scale: 0.98 }}
+              >
+                {minutesStatus === 'loading' ? 'Writing minutes…' : 'Generate meeting minutes'}
+              </motion.button>
+              <motion.button
+                type="button"
+                className="app__btn app__btn--secondary"
+                disabled={minutesStatus === 'loading'}
+                onClick={() => {
+                  setTranslationSegments([]);
+                  setMinutesStatus('idle');
+                  setMinutesResult(null);
+                  setMinutesError(null);
+                }}
+                whileTap={{ scale: 0.98 }}
+              >
+                Clear script (new run)
+              </motion.button>
+            </div>
+          )}
 
-        {error && (
-          <motion.p
-            className="app__error"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            role="alert"
-          >
-            <span>{error}</span>
-            <button
-              type="button"
-              className="app__error-dismiss"
-              onClick={() => setError(null)}
-              aria-label="Dismiss error"
-            >
-              ×
-            </button>
-          </motion.p>
-        )}
+          {minutesStatus === 'error' && minutesError && (
+            <div className="app__clean-error">
+              <p>{minutesError}</p>
+              <button
+                type="button"
+                className="app__btn app__btn--secondary"
+                onClick={() => {
+                  setMinutesStatus('idle');
+                  setMinutesError(null);
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {minutesStatus === 'success' && minutesResult && (
+            <div className="app__clean-result">
+              <h3 className="app__clean-result-title">Meeting minutes</h3>
+              <p className="app__clean-result-hint">
+                Structured from your bilingual segments
+                {useGlossaryAndBriefing ? ' using glossary and briefing.' : '.'}
+              </p>
+
+              <div className="app__clean-summary-wrap">
+                <label className="app__clean-label">Executive summary</label>
+                <p className="app__clean-summary">{minutesResult.executiveSummary || '(No summary)'}</p>
+              </div>
+
+              <div className="app__clean-transcript-wrap">
+                <label className="app__clean-label">Chronological record</label>
+                <div className="app__clean-transcript" role="document">
+                  {minutesResult.chronologicalRecord || '(Empty)'}
+                </div>
+              </div>
+
+              {minutesResult.decisions.length > 0 && (
+                <div className="app__clean-summary-wrap">
+                  <label className="app__clean-label">Decisions</label>
+                  <ul className="app__clean-keypoints">
+                    {minutesResult.decisions.map((point, i) => (
+                      <li key={`d-${i}`}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {minutesResult.actionItems.length > 0 && (
+                <div className="app__clean-summary-wrap">
+                  <label className="app__clean-label">Action items</label>
+                  <ul className="app__clean-keypoints">
+                    {minutesResult.actionItems.map((point, i) => (
+                      <li key={`a-${i}`}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {minutesResult.openQuestions.length > 0 && (
+                <div className="app__clean-summary-wrap">
+                  <label className="app__clean-label">Open questions</label>
+                  <ul className="app__clean-keypoints">
+                    {minutesResult.openQuestions.map((point, i) => (
+                      <li key={`q-${i}`}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {minutesResult.keyPoints && minutesResult.keyPoints.length > 0 && (
+                <div className="app__clean-summary-wrap">
+                  <label className="app__clean-label">Key points</label>
+                  <ul className="app__clean-keypoints">
+                    {minutesResult.keyPoints.map((point, i) => (
+                      <li key={`k-${i}`}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <button
+                type="button"
+                className="app__btn app__btn--secondary app__clean-download"
+                onClick={() => {
+                  const blob = new Blob([formatMinutesDownload(minutesResult)], { type: 'text/plain;charset=utf-8' });
+                  const a = document.createElement('a');
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `meeting-minutes-${new Date().toISOString().slice(0, 10)}.txt`;
+                  a.click();
+                  URL.revokeObjectURL(a.href);
+                }}
+              >
+                Download meeting minutes
+              </button>
+              <button
+                type="button"
+                className="app__btn app__btn--secondary"
+                onClick={() => {
+                  setMinutesStatus('idle');
+                  setMinutesResult(null);
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+        </section>
       </main>
+
+      {error && (
+        <motion.p
+          className="app__error"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          role="alert"
+        >
+          <span>{error}</span>
+          <button
+            type="button"
+            className="app__error-dismiss"
+            onClick={() => setError(null)}
+            aria-label="Dismiss error"
+          >
+            ×
+          </button>
+        </motion.p>
+      )}
     </div>
   );
 }

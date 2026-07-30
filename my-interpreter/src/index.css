@@ -12,14 +12,18 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-body {
+html,
+body,
+#root {
   margin: 0;
-  display: flex;
-  place-items: center;
   min-width: 320px;
-  min-height: 100vh;
+  height: 100%;
   color: #000000;
   background-color: #ffffff;
+}
+
+body {
+  overflow: hidden;
 }
 
 button {
@@ -38,4 +42,10 @@ h1 {
   font-size: 3.2em;
   line-height: 1.1;
   color: #000000;
+}
+
+@media (max-width: 899px) {
+  body {
+    overflow: auto;
+  }
 }

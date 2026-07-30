@@ -33,8 +33,8 @@ function baseHeaders(extra?: Record<string, string>): Record<string, string> {
 const FETCH_TIMEOUT_MS = {
   default: 60_000,
   interpret: 90_000,
-  /** ~3 min audio + Pro MT */
-  interpretSegment: 180_000,
+  /** Segment STT + Pro MT — must match Kong/VPS proxy timeout (300s) */
+  interpretSegment: 300_000,
   meetingMinutes: 180_000,
 } as const;
 

@@ -11,10 +11,12 @@ const SAMPLE_RATE_CAPTURE = 48000;
 const FRAME_SAMPLES = 4096;
 const FRAME_MS = (FRAME_SAMPLES / SAMPLE_RATE_CAPTURE) * 1000; // ≈ 85 ms
 
-/** Default rolling segment length for batch interpretation (~3 minutes). */
-export const SEGMENT_MS = 180_000;
+/** Default rolling segment length for batch interpretation (~1 minute). Shorter segments
+ *  process faster (less STT/MT work) so the queue keeps up with live speech while still
+ *  maintaining ~3 min lag via queued segments. */
+export const SEGMENT_MS = 60_000;
 /** Audio overlap carried into the next segment so boundaries are not lost. */
-export const SEGMENT_OVERLAP_MS = 15_000;
+export const SEGMENT_OVERLAP_MS = 5_000;
 /** Emit a shorter final segment on stop if at least this much speech was buffered. */
 const MIN_FINAL_SEGMENT_MS = 5_000;
 

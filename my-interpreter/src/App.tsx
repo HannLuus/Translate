@@ -32,7 +32,8 @@ import type {
 } from './types';
 import './App.css';
 
-const MAX_QUEUED_SEGMENTS = 3;
+/** Max unfinished jobs (queued + processing). At 60s segments, 5 slots ≈ ~5 min buffer. */
+const MAX_QUEUED_SEGMENTS = 5;
 const MAX_SEGMENT_ATTEMPTS = 4;
 
 function mergeSegmentText(candidate: string, lastLine: string): string | null {
@@ -383,9 +384,9 @@ function App() {
           setFailedSegmentLocalId(job.localId);
           setError(`Segment ${job.segmentIndex} failed after ${job.attempts} attempts: ${msg}`);
           pushErrorLog('error', `Segment ${job.segmentIndex} final: ${msg}`);
-          setSessionStatusLine(`Segment ${job.segmentIndex} failed — tap Retry`);
+          setSessionStatusLine(`Segment ${job.segmentIndex} failed — continuing with next`);
           bumpQueueUi();
-          break;
+          // Continue draining remaining queued segments instead of stopping the whole queue
         }
       }
       bumpQueueUi();
@@ -406,11 +407,11 @@ function App() {
   const enqueueSegment = useCallback((pcm: ArrayBuffer, segmentIndex: number, durationMs: number) => {
     const unfinished = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing');
     if (unfinished.length >= MAX_QUEUED_SEGMENTS) {
-      const msg = `Segment queue full (${MAX_QUEUED_SEGMENTS}). Translation is behind — wait for a segment to finish before more audio is queued.`;
+      const msg = `Segment queue full (${MAX_QUEUED_SEGMENTS}). Translation is behind — dropping oldest waiting segment to keep up.`;
       setError(msg);
       pushErrorLog('warn', msg);
-      setSessionStatusLine('Queue full — still recording, waiting to catch up');
-      // Still keep the newest segment by dropping oldest queued (not processing)
+      setSessionStatusLine('Queue full — dropping oldest waiting segment');
+      // Drop oldest queued segment; if none queued, drop oldest failed to make room
       const oldestQueued = segmentQueueRef.current.find((j) => j.status === 'queued');
       if (oldestQueued) {
         oldestQueued.status = 'failed';
@@ -418,7 +419,12 @@ function App() {
         oldestQueued.pcm = new ArrayBuffer(0);
         pushErrorLog('warn', `Dropped segment ${oldestQueued.segmentIndex} due to queue overflow`);
       } else {
-        return;
+        const oldestFailed = segmentQueueRef.current.find((j) => j.status === 'failed' && j.pcm.byteLength > 0);
+        if (oldestFailed) {
+          oldestFailed.pcm = new ArrayBuffer(0);
+          pushErrorLog('warn', `Cleared failed segment ${oldestFailed.segmentIndex} PCM to make queue room`);
+        }
+        // Never discard the newest audio — always enqueue below
       }
     }
 
@@ -597,6 +603,10 @@ function App() {
 
   const queuedCount = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
 
+  const visibleSegments = (testingMode || active)
+    ? translationSegments
+    : translationSegments.slice(-6);
+
   return (
     <div className="app">
       {updateAvailable ? (
@@ -676,7 +686,7 @@ function App() {
 
         {!active && (
           <p className="app__desktop-hint" role="status">
-            Mode: batch segments (~{Math.round(SEGMENT_MS / 60000)} min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
+            Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
           </p>
         )}
 
@@ -750,10 +760,10 @@ function App() {
         )}
 
         <ConversationView
-          translationText={translationSegments.slice(-6).map((s) => s.text).join('\n')}
+          translationText={visibleSegments.map((s) => s.text).join('\n')}
           isPlayingTts={isPlayingTts}
           testingMode={testingMode}
-          segments={testingMode ? translationSegments : translationSegments.slice(-6)}
+          segments={visibleSegments}
         />
 
         {translationSegments.length > 0 && !active && (

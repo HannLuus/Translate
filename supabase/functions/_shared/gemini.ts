@@ -56,12 +56,14 @@ const AUDIO_INTERPRET_SYSTEM =
 
 const BURMESE_TO_ENGLISH_SYSTEM =
   'You are a professional Burmese-to-English meeting interpreter. You receive a complete Burmese passage ' +
-  '(typically up to a few minutes of speech from a rolling meeting segment).\n\n' +
+  '(typically up to about a minute of speech from a rolling meeting segment). The Burmese may be raw STT ' +
+  'without punctuation.\n\n' +
   'Rules:\n' +
-  '- Translate into natural, fluent English paragraphs that preserve meaning, tone, and register.\n' +
+  '- Infer sentence boundaries from meaning and translate into natural, fluent English paragraphs.\n' +
+  '- Preserve meaning, tone, and register.\n' +
   '- Burmese is SOV: complete thoughts often end with the verb — translate the full passage as a unit, not word-by-word fragments.\n' +
   '- Use prior conversation context only to resolve pronouns/names continuity; do not invent content absent from the current Burmese.\n' +
-  '- Fix obvious STT punctuation issues silently; do not add speakers or topics that were not said.\n' +
+  '- Fix obvious STT issues silently; do not add speakers or topics that were not said.\n' +
   '- Output ONLY the English translation, no explanations or brackets.';
 
 const ENGLISH_TO_BURMESE_SYSTEM =
@@ -353,9 +355,15 @@ async function runGeminiAudioFallback(
   throw lastError;
 }
 
+export type InterpretPipelineOptions = {
+  /** Meeting batch mode: skip second-pass STT and the separate punctuation Gemini call. */
+  meetingSegment?: boolean;
+};
+
 async function resolveSttResult(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
+  skipRefine = false,
 ): Promise<{ stt: SttResult; secondPassUsed: boolean; sttPath: InterpretDiagnostics['sttPath'] }> {
   let stt = await transcribeBurmeseDetailed(audioBytes, meetingContext);
   let secondPassUsed = false;
@@ -364,7 +372,7 @@ async function resolveSttResult(
     : 'speech_api';
 
   const routingEnabled = isConfidenceRoutingEnabled();
-  const refineEnabled = isSecondPassRefineEnabled();
+  const refineEnabled = !skipRefine && isSecondPassRefineEnabled();
 
   if (
     routingEnabled &&
@@ -382,13 +390,17 @@ async function resolveSttResult(
 
 /**
  * Burmese audio -> English translation with confidence-aware STT routing.
+ * Meeting segments use a slim path: one STT pass + one Gemini MT call (no punctuate pass).
  */
 export async function transcribeAndTranslateAudio(
   audioBytes: Uint8Array,
   meetingContext?: string | null,
   termLock: TermLockMap = {},
   recentContext?: RecentContextPair[],
+  options: InterpretPipelineOptions = {},
 ): Promise<InterpretPipelineResult> {
+  const meetingSegment = options.meetingSegment === true;
+
   if (audioBytes.length < MIN_AUDIO_BYTES) {
     return {
       burmeseText: '',
@@ -404,25 +416,32 @@ export async function transcribeAndTranslateAudio(
   }
 
   try {
-    const { stt, secondPassUsed, sttPath } = await resolveSttResult(audioBytes, meetingContext);
+    const { stt, secondPassUsed, sttPath } = await resolveSttResult(
+      audioBytes,
+      meetingContext,
+      meetingSegment,
+    );
 
     if (stt.transcript) {
-      const recentBurmeseContext = recentContext
-        ?.slice(-3)
-        .map((p) => p.burmese)
-        .filter(Boolean)
-        .join(' ') || undefined;
+      let burmeseText = stt.transcript.trim();
+      if (!meetingSegment) {
+        const recentBurmeseContext = recentContext
+          ?.slice(-3)
+          .map((p) => p.burmese)
+          .filter(Boolean)
+          .join(' ') || undefined;
+        burmeseText = await restoreBurmesePunctuation(burmeseText, recentBurmeseContext);
+      }
 
-      const punctuated = await restoreBurmesePunctuation(stt.transcript, recentBurmeseContext);
       const { englishText, termLock: updatedLock } = await translateBurmeseToEnglish(
-        punctuated,
+        burmeseText,
         meetingContext,
         termLock,
         recentContext,
       );
 
       return {
-        burmeseText: punctuated,
+        burmeseText,
         englishText,
         termLock: updatedLock,
         diagnostics: {

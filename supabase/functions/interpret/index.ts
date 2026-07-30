@@ -90,6 +90,9 @@ Deno.serve(async (req) => {
     let termLock: TermLockMap = {};
     let recentContext: RecentContextPair[] = [];
 
+    let wantTts = false;
+    let meetingSegment = false;
+
     if (contentType.includes('application/json')) {
       const body = await req.json() as {
         audioBase64?: string;
@@ -97,6 +100,7 @@ Deno.serve(async (req) => {
         termLock?: unknown;
         recentContext?: unknown;
         mode?: string;
+        wantTts?: boolean;
       };
       if (!body?.audioBase64 || typeof body.audioBase64 !== 'string') {
         return new Response(
@@ -108,12 +112,16 @@ Deno.serve(async (req) => {
       meetingContext = typeof body.meetingContext === 'string' ? body.meetingContext : null;
       termLock = parseTermLock(body.termLock);
       recentContext = parseRecentContext(body.recentContext);
+      wantTts = body.wantTts === true;
+      meetingSegment = body.mode === 'segment';
     } else {
       const arrayBuffer = await req.arrayBuffer();
       audioBytes = new Uint8Array(arrayBuffer);
       meetingContext = decodeBase64Header(req.headers.get('x-meeting-context'));
       termLock = parseTermLockHeader(req.headers.get('x-term-lock'));
       recentContext = parseRecentContextHeader(req.headers.get('x-recent-context'));
+      wantTts = req.headers.get('x-want-tts') === '1';
+      meetingSegment = req.headers.get('x-interpret-mode') === 'segment';
     }
 
     if (!audioBytes.length) {
@@ -129,10 +137,17 @@ Deno.serve(async (req) => {
         meetingContext,
         termLock,
         recentContext,
+        { meetingSegment },
       );
 
     const diagnostics = createDiagnostics(startedAt, partialDiagnostics, burmeseText, englishText);
     logInterpretMetrics(diagnostics);
+    console.info('[interpret-path]', JSON.stringify({
+      meetingSegment,
+      wantTts,
+      ttsSkipped: !wantTts || !englishText,
+      latencyMs: diagnostics.latencyMs,
+    }));
 
     if (!englishText && !burmeseText) {
       return new Response(
@@ -148,7 +163,7 @@ Deno.serve(async (req) => {
     }
 
     let audioBase64: string | null = null;
-    if (englishText) {
+    if (wantTts && englishText) {
       try {
         audioBase64 = await synthesizeSpeech(englishText, 'en-US');
       } catch (ttsErr) {

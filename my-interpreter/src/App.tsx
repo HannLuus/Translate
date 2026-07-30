@@ -19,6 +19,17 @@ import {
 import { requestWakeLock, releaseWakeLock } from './wakeLock';
 import { extractNewSuffix, isDuplicateSegment } from './textMerge';
 import { APP_UPDATE_EVENT, getAppBuildTime, getAppVersionLabel } from './appVersion';
+import {
+  PARALLEL_WORKERS,
+  MAX_SEGMENT_ATTEMPTS,
+  WARN_BUFFERED_MS,
+  bufferedUnfinishedMs,
+  clearAllSegments,
+  getSegmentPcm,
+  jobToStored,
+  putSegment,
+  updateSegment,
+} from './segmentStore';
 import type {
   CaptureMode,
   PermissionState,
@@ -31,10 +42,6 @@ import type {
   SegmentJob,
 } from './types';
 import './App.css';
-
-/** Max unfinished jobs (queued + processing). At 60s segments, 5 slots ≈ ~5 min buffer. */
-const MAX_QUEUED_SEGMENTS = 5;
-const MAX_SEGMENT_ATTEMPTS = 4;
 
 function mergeSegmentText(candidate: string, lastLine: string): string | null {
   const trimmed = candidate.trim();
@@ -188,8 +195,18 @@ function App() {
   const [failedSegmentLocalId, setFailedSegmentLocalId] = useState<number | null>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const sessionActiveRef = useRef(false);
+  const sessionIdRef = useRef('');
+  const sessionGenRef = useRef(0);
   const segmentQueueRef = useRef<SegmentJob[]>([]);
-  const interpretDrainingRef = useRef(false);
+  const activeWorkersRef = useRef(0);
+  const drainRunningRef = useRef(false);
+  /** Next segmentIndex to append to the UI (ordered merge for parallel workers). */
+  const nextDisplayIndexRef = useRef(1);
+  const pendingDisplayRef = useRef<Map<number, { english: string; burmese: string; empty: boolean }>>(new Map());
+  /** segmentIndexes already flushed (including empty failures) — late retries upsert. */
+  const flushedIndexesRef = useRef<Set<number>>(new Set());
+  const playTtsEnabledRef = useRef(playTtsEnabled);
+  playTtsEnabledRef.current = playTtsEnabled;
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   const recentContextRef = useRef<RecentContextPair[]>([]);
   const termLockRef = useRef<TermLockMap>({});
@@ -320,114 +337,255 @@ function App() {
     });
   }, []);
 
-  const drainSegmentQueue = useCallback(async () => {
-    if (interpretDrainingRef.current) return;
-    interpretDrainingRef.current = true;
+  /** Replace or append a segment that was previously flushed as empty (manual retry). */
+  const upsertTranslation = useCallback((english: string, burmese: string, segmentIndex: number) => {
+    const eng = english.trim();
+    const my = burmese.trim();
+    if (!eng && !my) return;
 
-    const combinedContext = useGlossaryAndBriefing
-      ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
-      : '';
+    setTranslationSegments((prev) => {
+      const existingIdx = prev.findIndex((s) => s.segmentIndex === segmentIndex);
+      const placeholder = '(Burmese heard; English empty)';
+      const text = eng || placeholder;
 
-    while (sessionActiveRef.current || segmentQueueRef.current.some((j) => j.status === 'queued' || j.status === 'processing')) {
-      const job = segmentQueueRef.current.find((j) => j.status === 'queued');
-      if (!job) break;
+      if (existingIdx >= 0) {
+        const next = [...prev];
+        next[existingIdx] = {
+          ...next[existingIdx],
+          text,
+          burmeseText: my || undefined,
+          shownAt: Date.now(),
+        };
+        return next;
+      }
 
-      job.status = 'processing';
+      const lastText = prev[prev.length - 1]?.text ?? '';
+      const displayEnglish = eng ? mergeSegmentText(eng, lastText) : null;
+      if (eng && displayEnglish === null) {
+        // Still show retry result even if similar to neighbor
+        return [
+          ...prev,
+          {
+            id: ++segmentIdRef.current,
+            text: eng,
+            shownAt: Date.now(),
+            burmeseText: my || undefined,
+            segmentIndex,
+          },
+        ];
+      }
+
+      return [
+        ...prev,
+        {
+          id: ++segmentIdRef.current,
+          text: displayEnglish || placeholder,
+          shownAt: Date.now(),
+          burmeseText: my || undefined,
+          segmentIndex,
+        },
+      ];
+    });
+
+    if (eng) {
+      recentContextRef.current = [
+        ...recentContextRef.current,
+        { burmese: my, english: eng },
+      ].slice(-4);
+    }
+  }, []);
+
+  const flushOrderedDisplay = useCallback(() => {
+    while (pendingDisplayRef.current.has(nextDisplayIndexRef.current)) {
+      const idx = nextDisplayIndexRef.current;
+      const item = pendingDisplayRef.current.get(idx)!;
+      pendingDisplayRef.current.delete(idx);
+      nextDisplayIndexRef.current = idx + 1;
+      flushedIndexesRef.current.add(idx);
+      if (!item.empty) {
+        appendTranslation(item.english, item.burmese, idx);
+      }
+    }
+  }, [appendTranslation]);
+
+  const persistJob = useCallback(async (job: SegmentJob) => {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    job.revision += 1;
+    const revision = job.revision;
+    try {
+      await putSegment(jobToStored(job, sid, revision));
+    } catch (e) {
+      pushErrorLog('warn', `IndexedDB put failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [pushErrorLog]);
+
+  const processOneJob = useCallback(async (
+    job: SegmentJob,
+    combinedContext: string,
+  ) => {
+    // Caller claimed the job (status === 'processing'). Retry in-place — never re-queue
+    // while this worker still owns the job (avoids double-claim by the other worker).
+    const owningGen = job.sessionGen;
+
+    while (job.attempts < MAX_SEGMENT_ATTEMPTS) {
+      if (sessionGenRef.current !== owningGen) return;
+
       job.attempts += 1;
-      setInterpretStatus('processing');
-      setFailedSegmentLocalId(null);
-      const lagMin = Math.max(0, Math.round((Date.now() - job.enqueuedAt) / 60000));
-      setSessionStatusLine(
-        `Translating segment ${job.segmentIndex} (${Math.round(job.durationMs / 1000)}s audio)` +
-          (lagMin > 0 ? ` · ~${lagMin} min behind` : '') +
-          (queueDepthRef.current > 1 ? ` · ${queueDepthRef.current - 1} waiting` : ''),
-      );
+      await persistJob(job);
       bumpQueueUi();
 
+      const termLockSnap = { ...termLockRef.current };
+      const recentSnap = recentContextRef.current.slice(-4);
+      const waiting = segmentQueueRef.current.filter((j) => j.status === 'queued').length;
+      const oldestQueued = segmentQueueRef.current.find((j) => j.status === 'queued' || j.status === 'processing');
+      const lagMin = oldestQueued
+        ? Math.max(0, Math.round((Date.now() - oldestQueued.enqueuedAt) / 60000))
+        : 0;
+      setInterpretStatus('processing');
+      setSessionStatusLine(
+        `Translating segment ${job.segmentIndex}` +
+          (lagMin > 0 ? ` · catching up · ~${lagMin} min behind` : '') +
+          (waiting > 0 ? ` · ${waiting} waiting` : ''),
+      );
+
       try {
+        const wantTts = playTtsEnabledRef.current;
         const result = await interpretSegment(
           job.pcm,
           combinedContext || undefined,
-          termLockRef.current,
-          recentContextRef.current,
+          termLockSnap,
+          recentSnap,
+          wantTts,
         );
-        if (!sessionActiveRef.current && !segmentQueueRef.current.includes(job)) {
-          break;
+
+        if (sessionGenRef.current !== owningGen) return;
+
+        if (result.termLock) {
+          termLockRef.current = { ...termLockRef.current, ...result.termLock };
         }
-        if (result.termLock) termLockRef.current = result.termLock;
         if (result.diagnostics) appendInterpretMetrics(result.diagnostics);
 
         const burmese = result.burmeseText?.trim() ?? '';
         const english = result.englishText?.trim() ?? '';
         if (!burmese && !english) {
           job.status = 'empty';
-          setSessionStatusLine(`Segment ${job.segmentIndex}: no speech detected`);
+          if (flushedIndexesRef.current.has(job.segmentIndex)) {
+            // already advanced past this index
+          } else {
+            pendingDisplayRef.current.set(job.segmentIndex, { english: '', burmese: '', empty: true });
+          }
           pushErrorLog('warn', `Segment ${job.segmentIndex}: empty STT/MT`);
+        } else if (flushedIndexesRef.current.has(job.segmentIndex)) {
+          job.status = 'done';
+          upsertTranslation(english, burmese, job.segmentIndex);
+          if (wantTts && result.audioBase64) playTts(result.audioBase64);
         } else {
           job.status = 'done';
-          appendTranslation(english, burmese, job.segmentIndex);
-          if (playTtsEnabled && result.audioBase64) playTts(result.audioBase64);
-          setSessionStatusLine(`Segment ${job.segmentIndex} ready`);
+          pendingDisplayRef.current.set(job.segmentIndex, { english, burmese, empty: false });
+          if (wantTts && result.audioBase64) playTts(result.audioBase64);
         }
-        // Drop finished PCM to free memory
+
         job.pcm = new ArrayBuffer(0);
+        job.revision += 1;
+        await updateSegment(job.localId, {
+          status: job.status,
+          attempts: job.attempts,
+          revision: job.revision,
+        });
+        flushOrderedDisplay();
+        bumpQueueUi();
+        return;
       } catch (e) {
+        if (sessionGenRef.current !== owningGen) return;
         const msg = e instanceof Error ? e.message : 'Interpret failed';
         if (job.attempts < MAX_SEGMENT_ATTEMPTS) {
-          job.status = 'queued';
           setError(`Segment ${job.segmentIndex} failed (attempt ${job.attempts}): ${msg}. Retrying…`);
           pushErrorLog('error', `Segment ${job.segmentIndex}: ${msg}`);
+          await persistJob(job);
           await new Promise((r) => setTimeout(r, 2000 * job.attempts));
-        } else {
-          job.status = 'failed';
-          job.error = msg;
-          setFailedSegmentLocalId(job.localId);
-          setError(`Segment ${job.segmentIndex} failed after ${job.attempts} attempts: ${msg}`);
-          pushErrorLog('error', `Segment ${job.segmentIndex} final: ${msg}`);
-          setSessionStatusLine(`Segment ${job.segmentIndex} failed — continuing with next`);
-          bumpQueueUi();
-          // Continue draining remaining queued segments instead of stopping the whole queue
+          continue;
         }
+        job.status = 'failed';
+        job.error = msg;
+        if (!flushedIndexesRef.current.has(job.segmentIndex)) {
+          pendingDisplayRef.current.set(job.segmentIndex, { english: '', burmese: '', empty: true });
+          flushOrderedDisplay();
+        }
+        setFailedSegmentLocalId(job.localId);
+        setError(`Segment ${job.segmentIndex} failed after ${job.attempts} attempts: ${msg}`);
+        pushErrorLog('error', `Segment ${job.segmentIndex} final: ${msg}`);
+        setSessionStatusLine(`Segment ${job.segmentIndex} failed — continuing with next`);
+        await persistJob(job);
+        bumpQueueUi();
+        return;
       }
+    }
+
+    // Safety: exhausted attempts without an explicit return
+    if (sessionGenRef.current === owningGen && job.status === 'processing') {
+      job.status = 'failed';
+      job.error = 'Exhausted retries';
+      if (!flushedIndexesRef.current.has(job.segmentIndex)) {
+        pendingDisplayRef.current.set(job.segmentIndex, { english: '', burmese: '', empty: true });
+        flushOrderedDisplay();
+      }
+      setFailedSegmentLocalId(job.localId);
+      await persistJob(job);
       bumpQueueUi();
     }
+  }, [persistJob, bumpQueueUi, playTts, flushOrderedDisplay, pushErrorLog, upsertTranslation]);
 
-    interpretDrainingRef.current = false;
+  const drainSegmentQueue = useCallback(async () => {
+    if (drainRunningRef.current) return;
+    drainRunningRef.current = true;
+
+    const combinedContext = useGlossaryAndBriefing
+      ? [glossaryEntriesToText(activeProfile.glossary), activeProfile.briefing.trim()].filter(Boolean).join('\n\n')
+      : '';
+    const drainGen = sessionGenRef.current;
+
+    const workerLoop = async () => {
+      for (;;) {
+        if (sessionGenRef.current !== drainGen) return;
+        const job = segmentQueueRef.current.find((j) => j.status === 'queued');
+        if (!job) return;
+        // Claim synchronously so parallel workers never pick the same job.
+        job.status = 'processing';
+        activeWorkersRef.current += 1;
+        try {
+          await processOneJob(job, combinedContext);
+        } finally {
+          activeWorkersRef.current -= 1;
+        }
+      }
+    };
+
+    try {
+      await Promise.all(Array.from({ length: PARALLEL_WORKERS }, () => workerLoop()));
+    } finally {
+      drainRunningRef.current = false;
+      if (
+        sessionGenRef.current === drainGen &&
+        segmentQueueRef.current.some((j) => j.status === 'queued')
+      ) {
+        void drainSegmentQueue();
+        return;
+      }
+    }
+
+    if (sessionGenRef.current !== drainGen) return;
+
     if (sessionActiveRef.current) {
       setInterpretStatus('listening');
-      const pending = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'failed').length;
-      if (pending === 0) {
-        setSessionStatusLine(`Recording next ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`);
-      }
+      setSessionStatusLine(`Recording next ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`);
     } else {
       setInterpretStatus('idle');
+      setSessionStatusLine('All segments finished');
     }
-  }, [activeProfile, useGlossaryAndBriefing, appendTranslation, playTts, playTtsEnabled, pushErrorLog, bumpQueueUi]);
+  }, [activeProfile, useGlossaryAndBriefing, processOneJob]);
 
   const enqueueSegment = useCallback((pcm: ArrayBuffer, segmentIndex: number, durationMs: number) => {
-    const unfinished = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing');
-    if (unfinished.length >= MAX_QUEUED_SEGMENTS) {
-      const msg = `Segment queue full (${MAX_QUEUED_SEGMENTS}). Translation is behind — dropping oldest waiting segment to keep up.`;
-      setError(msg);
-      pushErrorLog('warn', msg);
-      setSessionStatusLine('Queue full — dropping oldest waiting segment');
-      // Drop oldest queued segment; if none queued, drop oldest failed to make room
-      const oldestQueued = segmentQueueRef.current.find((j) => j.status === 'queued');
-      if (oldestQueued) {
-        oldestQueued.status = 'failed';
-        oldestQueued.error = 'Dropped: queue overflow';
-        oldestQueued.pcm = new ArrayBuffer(0);
-        pushErrorLog('warn', `Dropped segment ${oldestQueued.segmentIndex} due to queue overflow`);
-      } else {
-        const oldestFailed = segmentQueueRef.current.find((j) => j.status === 'failed' && j.pcm.byteLength > 0);
-        if (oldestFailed) {
-          oldestFailed.pcm = new ArrayBuffer(0);
-          pushErrorLog('warn', `Cleared failed segment ${oldestFailed.segmentIndex} PCM to make queue room`);
-        }
-        // Never discard the newest audio — always enqueue below
-      }
-    }
-
     const job: SegmentJob = {
       localId: ++jobIdRef.current,
       segmentIndex,
@@ -436,26 +594,62 @@ function App() {
       status: 'queued',
       attempts: 0,
       enqueuedAt: Date.now(),
+      revision: 0,
+      sessionGen: sessionGenRef.current,
     };
     segmentQueueRef.current.push(job);
+    void persistJob(job);
+
+    const bufferedMs = bufferedUnfinishedMs(segmentQueueRef.current);
+    const waiting = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
+    if (bufferedMs >= WARN_BUFFERED_MS) {
+      const mins = Math.round(bufferedMs / 60000);
+      setSessionStatusLine(`Catching up · ~${mins} min buffered · ${waiting} segments in queue (nothing dropped)`);
+      pushErrorLog('warn', `Large backlog: ${mins} min buffered, ${waiting} unfinished segments`);
+    } else if (waiting > PARALLEL_WORKERS) {
+      const oldest = segmentQueueRef.current.find((j) => j.status === 'queued' || j.status === 'processing');
+      const lagMin = oldest ? Math.max(0, Math.round((Date.now() - oldest.enqueuedAt) / 60000)) : 0;
+      setSessionStatusLine(
+        `Catching up` +
+          (lagMin > 0 ? ` · ~${lagMin} min behind` : '') +
+          ` · ${waiting - PARALLEL_WORKERS} waiting`,
+      );
+    }
+
     bumpQueueUi();
     void drainSegmentQueue();
-  }, [bumpQueueUi, drainSegmentQueue, pushErrorLog]);
+  }, [persistJob, bumpQueueUi, drainSegmentQueue, pushErrorLog]);
 
-  const retryFailedSegment = useCallback(() => {
+  const retryFailedSegment = useCallback(async () => {
     const job = segmentQueueRef.current.find((j) => j.localId === failedSegmentLocalId && j.status === 'failed');
-    if (!job || job.pcm.byteLength === 0) {
+    if (!job) {
+      setError('Nothing left to retry for that segment.');
+      return;
+    }
+    if (job.pcm.byteLength === 0) {
+      try {
+        const fromDb = await getSegmentPcm(job.localId);
+        if (fromDb && fromDb.byteLength > 0) {
+          job.pcm = fromDb;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (job.pcm.byteLength === 0) {
       setError('Nothing left to retry for that segment (audio was cleared).');
       return;
     }
     job.status = 'queued';
     job.attempts = 0;
     job.error = undefined;
+    job.sessionGen = sessionGenRef.current;
     setFailedSegmentLocalId(null);
     setError(null);
+    void persistJob(job);
     bumpQueueUi();
     void drainSegmentQueue();
-  }, [failedSegmentLocalId, bumpQueueUi, drainSegmentQueue]);
+  }, [failedSegmentLocalId, bumpQueueUi, drainSegmentQueue, persistJob]);
 
   const startInterpretation = useCallback(async () => {
     setError(null);
@@ -468,14 +662,35 @@ function App() {
       pushErrorLog('error', msg);
       return;
     }
+    if (drainRunningRef.current || activeWorkersRef.current > 0) {
+      setError('Still finishing the previous session’s translations. Wait a moment, then Start again.');
+      return;
+    }
     try {
+      // Invalidate any leftover async work from a prior session.
+      sessionGenRef.current += 1;
+      const sessionGen = sessionGenRef.current;
+
       setTranslationSegments([]);
       recentContextRef.current = [];
       termLockRef.current = {};
       segmentQueueRef.current = [];
       jobIdRef.current = 0;
+      nextDisplayIndexRef.current = 1;
+      pendingDisplayRef.current.clear();
+      flushedIndexesRef.current.clear();
       clearInterpretMetrics();
       setFailedSegmentLocalId(null);
+
+      const sessionId = `session-${Date.now()}`;
+      sessionIdRef.current = sessionId;
+      try {
+        await clearAllSegments();
+      } catch {
+        /* ignore IDB wipe failures */
+      }
+
+      if (sessionGenRef.current !== sessionGen) return;
 
       const stream = await getCaptureStream(
         mode,
@@ -730,10 +945,10 @@ function App() {
           <div className="app__interpret-status">
             <p className="app__interpret-hint" role="status">
               {interpretStatus === 'listening' && (
-                <>Recording continuously · English updates after each ~{Math.round(SEGMENT_MS / 60000)}-minute segment.</>
+                <>Recording continuously · English updates after each ~{Math.round(SEGMENT_MS / 60000)}-minute segment. Nothing is dropped if translation lags.</>
               )}
               {interpretStatus === 'processing' && (
-                <>Sending segment to server…{queuedCount > 1 ? ` (${queuedCount} in queue)` : ''}</>
+                <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
               )}
             </p>
             {sessionStatusLine && (

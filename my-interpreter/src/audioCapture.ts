@@ -118,8 +118,8 @@ const WORKLET_URL = new URL(
 ).href;
 
 /**
- * Continuous capture that closes rolling ~3-minute PCM segments with overlap.
- * Capture keeps running while prior segments are translated.
+ * Continuous capture that closes rolling ~1-minute PCM segments with overlap.
+ * Capture keeps running while prior segments are translated (durable client queue).
  */
 export async function captureAudioSegments(
   stream: MediaStream,

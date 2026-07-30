@@ -91,4 +91,8 @@ export interface SegmentJob {
   attempts: number;
   error?: string;
   enqueuedAt: number;
+  /** Bumped on each persist so stale IndexedDB puts are ignored. */
+  revision: number;
+  /** Session generation that owns this job — workers ignore if session moved on. */
+  sessionGen: number;
 }

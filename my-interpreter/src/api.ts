@@ -168,13 +168,15 @@ function capTermLock(termLock?: TermLockMap, maxEntries = 80): TermLockMap | und
 }
 
 /**
- * Batch interpret: ~3-minute PCM segment with context in JSON body (avoids header bloat / Kong CORS).
+ * Batch interpret: ~1-minute PCM segment with context in JSON body (avoids header bloat / Kong CORS).
+ * TTS is only synthesized when wantTts is true (matches "Play translation aloud").
  */
 export async function interpretSegment(
   audioPcm16khz: ArrayBuffer,
   meetingContext?: string | null,
   termLock?: TermLockMap,
   recentContext?: RecentContextPair[],
+  wantTts = false,
 ): Promise<InterpretResult> {
   const body = JSON.stringify({
     audioBase64: arrayBufferToBase64(audioPcm16khz),
@@ -183,6 +185,7 @@ export async function interpretSegment(
     termLock: capTermLock(termLock) ?? {},
     recentContext: (recentContext ?? []).slice(-4),
     mode: 'segment',
+    wantTts,
   });
 
   const headers = baseHeaders({ 'Content-Type': 'application/json' });

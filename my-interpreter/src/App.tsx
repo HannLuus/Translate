@@ -789,18 +789,27 @@ function App() {
             },
             {
               signal: abort.signal,
+              onDecodeProgress: ({ chunkIndex, chunkCount }) => {
+                if (sessionGenRef.current !== sessionGen) return;
+                setSessionStatusLine(`Decoding audio… part ${chunkIndex} of ${chunkCount}`);
+              },
               onDecoded: ({ durationMs, estimatedSegments }) => {
                 if (sessionGenRef.current !== sessionGen) return;
                 uploadSegmentTotalRef.current = estimatedSegments;
                 if (durationMs >= LONG_UPLOAD_WARN_MS) {
                   const hours = Math.round(durationMs / 3_600_000);
-                  const warn = `This recording is very long (~${hours} h). Processing may be slow or run out of memory on phones.`;
-                  setError(warn);
-                  pushErrorLog('warn', warn);
+                  pushErrorLog(
+                    'warn',
+                    `Long recording (~${hours} h) — decoding may take several minutes on desktop`,
+                  );
+                  setSessionStatusLine(
+                    `Long recording (~${hours} h) · decoding in parts · ~${estimatedSegments} segments expected…`,
+                  );
+                } else {
+                  setSessionStatusLine(
+                    `Decoded · ~${estimatedSegments} segments · starting translation…`,
+                  );
                 }
-                setSessionStatusLine(
-                  `Decoded · ~${estimatedSegments} segments · starting translation…`,
-                );
               },
             },
           );
@@ -1020,7 +1029,10 @@ function App() {
               loopbackDeviceId={loopbackDeviceId}
               onLoopbackDeviceIdChange={setLoopbackDeviceId}
               uploadFile={uploadFile}
-              onUploadFileChange={setUploadFile}
+              onUploadFileChange={(file) => {
+                setUploadFile(file);
+                if (file) setError(null);
+              }}
               uploadFileInputKey={uploadFileInputKey}
               disabled={active}
             />
@@ -1055,7 +1067,8 @@ function App() {
 
             {mode === 'upload_recording' && !active && (
               <p className="app__desktop-hint" role="status">
-                Upload a downloaded Burmese meeting recording. Fill in the scenario profile (who is meeting, topic, glossary) for better results. Same ~1-minute segments as live mode.
+                <strong>From file</strong> mode: choose your recording above, then click{' '}
+                <strong>Start processing</strong>. Fill in the scenario profile for better results.
               </p>
             )}
 
@@ -1071,7 +1084,13 @@ function App() {
                   type="button"
                   className="app__btn app__btn--start"
                   onClick={startInterpretation}
+                  disabled={mode === 'upload_recording' && !uploadFile}
                   whileTap={{ scale: 0.98 }}
+                  title={
+                    mode === 'upload_recording' && !uploadFile
+                      ? 'Choose a recording file first'
+                      : undefined
+                  }
                 >
                   {mode === 'upload_recording' ? 'Start processing' : 'Start interpretation'}
                 </motion.button>

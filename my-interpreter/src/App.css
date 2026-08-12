@@ -280,8 +280,17 @@
   color: white;
 }
 
-.app__btn--start:hover {
-  background: #4338ca;
+.app__btn--start:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.app__btn--start:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.app__btn--start:disabled:hover {
+  filter: none;
 }
 
 .app__btn--stop {
@@ -535,10 +544,93 @@
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.platform-selector__upload-intro {
+  font-size: 0.82rem;
+  color: #cbd5e1;
+  margin: 0 0 0.75rem 0;
+  line-height: 1.45;
+}
+
+.platform-selector__upload-steps {
+  list-style: none;
+  margin: 0 0 0.85rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.platform-selector__upload-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.platform-selector__upload-steps li.current {
+  color: #e2e8f0;
+}
+
+.platform-selector__upload-steps li.done {
+  color: #86efac;
+}
+
+.platform-selector__step-num {
+  flex-shrink: 0;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.platform-selector__upload-steps li.done .platform-selector__step-num {
+  background: rgba(34, 197, 94, 0.25);
+}
+
 .platform-selector__upload label {
   display: block;
   font-size: 0.85rem;
   margin-bottom: 0.25rem;
+}
+
+.platform-selector__file--hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.platform-selector__choose-file {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.18);
+  color: inherit;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.platform-selector__choose-file:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.28);
+}
+
+.platform-selector__choose-file:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .platform-selector__file {
@@ -547,6 +639,27 @@
   font-size: 0.85rem;
   color: inherit;
   box-sizing: border-box;
+}
+
+.platform-selector__file-ready {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  color: #86efac;
+  margin: 0.55rem 0 0 0;
+  line-height: 1.35;
+}
+
+.platform-selector__file-ready span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.platform-selector__file-hint {
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin: 0.45rem 0 0 0;
 }
 
 .platform-selector__file::file-selector-button {

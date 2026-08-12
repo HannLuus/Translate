@@ -7,6 +7,7 @@ import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
 import { getCaptureStream, captureAudioSegments, SEGMENT_MS } from './audioCapture';
+import { decodeAudioFileToSegments, LONG_UPLOAD_WARN_MS } from './audioFileSegments';
 import {
   interpretSegment,
   healthCheck,
@@ -162,13 +163,19 @@ function App() {
 
   const [mode, setMode] = useState<CaptureMode>(() => {
     const s = localStorage.getItem(MODE_STORAGE_KEY);
-    return (s === 'desktop' || s === 'rooted_android' || s === 'face_to_face')
+    return (
+      s === 'desktop' ||
+      s === 'rooted_android' ||
+      s === 'face_to_face' ||
+      s === 'upload_recording'
+    )
       ? s
       : 'face_to_face';
   });
   const [loopbackDeviceId, setLoopbackDeviceId] = useState(() => {
     return localStorage.getItem(LOOPBACK_STORAGE_KEY) ?? '';
   });
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [testingMode, setTestingMode] = useState(() => {
     const stored = localStorage.getItem(TESTING_MODE_STORAGE_KEY);
     return stored !== '0';
@@ -195,6 +202,13 @@ function App() {
   const [failedSegmentLocalId, setFailedSegmentLocalId] = useState<number | null>(null);
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const sessionActiveRef = useRef(false);
+  /** True while an upload-recording session owns the queue (until drain finishes or Stop). */
+  const isUploadSessionRef = useRef(false);
+  /** Session generation for an in-flight upload job (used to disable TTS). */
+  const uploadSessionGenRef = useRef<number | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  const uploadSegmentTotalRef = useRef(0);
+  const [uploadFileInputKey, setUploadFileInputKey] = useState(0);
   const sessionIdRef = useRef('');
   const sessionGenRef = useRef(0);
   const segmentQueueRef = useRef<SegmentJob[]>([]);
@@ -443,14 +457,20 @@ function App() {
         ? Math.max(0, Math.round((Date.now() - oldestQueued.enqueuedAt) / 60000))
         : 0;
       setInterpretStatus('processing');
+      const uploadTotal = uploadSegmentTotalRef.current;
+      const uploadProgress =
+        uploadSessionGenRef.current === owningGen && uploadTotal > 0
+          ? ` (${job.segmentIndex} of ${uploadTotal})`
+          : '';
       setSessionStatusLine(
-        `Translating segment ${job.segmentIndex}` +
+        `Translating segment ${job.segmentIndex}${uploadProgress}` +
           (lagMin > 0 ? ` · catching up · ~${lagMin} min behind` : '') +
           (waiting > 0 ? ` · ${waiting} waiting` : ''),
       );
 
       try {
-        const wantTts = playTtsEnabledRef.current;
+        const wantTts =
+          playTtsEnabledRef.current && job.sessionGen !== uploadSessionGenRef.current;
         const result = await interpretSegment(
           job.pcm,
           combinedContext || undefined,
@@ -536,6 +556,16 @@ function App() {
     }
   }, [persistJob, bumpQueueUi, playTts, flushOrderedDisplay, pushErrorLog, upsertTranslation]);
 
+  const finishUploadSession = useCallback(() => {
+    isUploadSessionRef.current = false;
+    uploadSessionGenRef.current = null;
+    uploadAbortRef.current = null;
+    stopCaptureRef.current = null;
+    setUploadFile(null);
+    setUploadFileInputKey((k) => k + 1);
+    setActive(false);
+  }, []);
+
   const drainSegmentQueue = useCallback(async () => {
     if (drainRunningRef.current) return;
     drainRunningRef.current = true;
@@ -577,13 +607,20 @@ function App() {
     if (sessionGenRef.current !== drainGen) return;
 
     if (sessionActiveRef.current) {
-      setInterpretStatus('listening');
-      setSessionStatusLine(`Recording next ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`);
+      setInterpretStatus(isUploadSessionRef.current ? 'processing' : 'listening');
+      setSessionStatusLine(
+        isUploadSessionRef.current
+          ? 'Queueing remaining audio…'
+          : `Recording next ~${Math.round(SEGMENT_MS / 60000)}-minute segment…`,
+      );
     } else {
       setInterpretStatus('idle');
       setSessionStatusLine('All segments finished');
+      if (isUploadSessionRef.current) {
+        finishUploadSession();
+      }
     }
-  }, [activeProfile, useGlossaryAndBriefing, processOneJob]);
+  }, [activeProfile, useGlossaryAndBriefing, processOneJob, finishUploadSession]);
 
   const enqueueSegment = useCallback((pcm: ArrayBuffer, segmentIndex: number, durationMs: number) => {
     const job: SegmentJob = {
@@ -602,18 +639,21 @@ function App() {
 
     const bufferedMs = bufferedUnfinishedMs(segmentQueueRef.current);
     const waiting = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
-    if (bufferedMs >= WARN_BUFFERED_MS) {
-      const mins = Math.round(bufferedMs / 60000);
-      setSessionStatusLine(`Catching up · ~${mins} min buffered · ${waiting} segments in queue (nothing dropped)`);
-      pushErrorLog('warn', `Large backlog: ${mins} min buffered, ${waiting} unfinished segments`);
-    } else if (waiting > PARALLEL_WORKERS) {
-      const oldest = segmentQueueRef.current.find((j) => j.status === 'queued' || j.status === 'processing');
-      const lagMin = oldest ? Math.max(0, Math.round((Date.now() - oldest.enqueuedAt) / 60000)) : 0;
-      setSessionStatusLine(
-        `Catching up` +
-          (lagMin > 0 ? ` · ~${lagMin} min behind` : '') +
-          ` · ${waiting - PARALLEL_WORKERS} waiting`,
-      );
+    const skipStatusOverwrite = isUploadSessionRef.current && sessionActiveRef.current;
+    if (!skipStatusOverwrite) {
+      if (bufferedMs >= WARN_BUFFERED_MS) {
+        const mins = Math.round(bufferedMs / 60000);
+        setSessionStatusLine(`Catching up · ~${mins} min buffered · ${waiting} segments in queue (nothing dropped)`);
+        pushErrorLog('warn', `Large backlog: ${mins} min buffered, ${waiting} unfinished segments`);
+      } else if (waiting > PARALLEL_WORKERS) {
+        const oldest = segmentQueueRef.current.find((j) => j.status === 'queued' || j.status === 'processing');
+        const lagMin = oldest ? Math.max(0, Math.round((Date.now() - oldest.enqueuedAt) / 60000)) : 0;
+        setSessionStatusLine(
+          `Catching up` +
+            (lagMin > 0 ? ` · ~${lagMin} min behind` : '') +
+            ` · ${waiting - PARALLEL_WORKERS} waiting`,
+        );
+      }
     }
 
     bumpQueueUi();
@@ -662,6 +702,12 @@ function App() {
       pushErrorLog('error', msg);
       return;
     }
+    if (mode === 'upload_recording' && !uploadFile) {
+      const msg = 'Choose a meeting recording file before starting.';
+      setError(msg);
+      pushErrorLog('error', msg);
+      return;
+    }
     if (drainRunningRef.current || activeWorkersRef.current > 0) {
       setError('Still finishing the previous session’s translations. Wait a moment, then Start again.');
       return;
@@ -681,6 +727,8 @@ function App() {
       flushedIndexesRef.current.clear();
       clearInterpretMetrics();
       setFailedSegmentLocalId(null);
+      uploadSegmentTotalRef.current = 0;
+      uploadSessionGenRef.current = null;
 
       const sessionId = `session-${Date.now()}`;
       sessionIdRef.current = sessionId;
@@ -692,11 +740,108 @@ function App() {
 
       if (sessionGenRef.current !== sessionGen) return;
 
+      if (mode === 'upload_recording') {
+        const file = uploadFile;
+        if (!file) {
+          const msg = 'Choose a meeting recording file before starting.';
+          setError(msg);
+          pushErrorLog('error', msg);
+          return;
+        }
+
+        const abort = new AbortController();
+        uploadAbortRef.current = abort;
+        isUploadSessionRef.current = true;
+        uploadSessionGenRef.current = sessionGen;
+        setCaptureStream(null);
+        setActive(true);
+        sessionActiveRef.current = true;
+        setInterpretStatus('processing');
+        setSessionStatusLine('Decoding audio…');
+
+        stopCaptureRef.current = () => {
+          abort.abort();
+          sessionActiveRef.current = false;
+          uploadAbortRef.current = null;
+          void drainSegmentQueue();
+          if (currentTtsRef.current) {
+            currentTtsRef.current.pause();
+            currentTtsRef.current = null;
+            setIsPlayingTts(false);
+          }
+          setInterpretStatus('processing');
+          setSessionStatusLine('Finishing any segments still translating…');
+        };
+
+        try {
+          const { segmentCount } = await decodeAudioFileToSegments(
+            file,
+            (pcm, meta) => {
+              if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
+              uploadSegmentTotalRef.current = meta.segmentIndex;
+              const total = uploadSegmentTotalRef.current;
+              setSessionStatusLine(
+                total > 0
+                  ? `Queued segment ${meta.segmentIndex} of ~${total}…`
+                  : `Queued segment ${meta.segmentIndex}…`,
+              );
+              enqueueSegment(pcm, meta.segmentIndex, meta.durationMs);
+            },
+            {
+              signal: abort.signal,
+              onDecoded: ({ durationMs, estimatedSegments }) => {
+                if (sessionGenRef.current !== sessionGen) return;
+                uploadSegmentTotalRef.current = estimatedSegments;
+                if (durationMs >= LONG_UPLOAD_WARN_MS) {
+                  const hours = Math.round(durationMs / 3_600_000);
+                  const warn = `This recording is very long (~${hours} h). Processing may be slow or run out of memory on phones.`;
+                  setError(warn);
+                  pushErrorLog('warn', warn);
+                }
+                setSessionStatusLine(
+                  `Decoded · ~${estimatedSegments} segments · starting translation…`,
+                );
+              },
+            },
+          );
+
+          if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
+
+          uploadSegmentTotalRef.current = segmentCount;
+          sessionActiveRef.current = false;
+          setInterpretStatus('processing');
+          setSessionStatusLine(`Queued ${segmentCount} segments · translating…`);
+
+          const unfinished = segmentQueueRef.current.some(
+            (j) => j.status === 'queued' || j.status === 'processing',
+          );
+          if (!unfinished && !drainRunningRef.current && activeWorkersRef.current === 0) {
+            finishUploadSession();
+            setInterpretStatus('idle');
+            setSessionStatusLine('All segments finished');
+          } else {
+            void drainSegmentQueue();
+          }
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') return;
+          if (sessionGenRef.current !== sessionGen) return;
+          sessionActiveRef.current = false;
+          finishUploadSession();
+          setInterpretStatus('idle');
+          setSessionStatusLine('');
+          const msg = e instanceof Error ? e.message : 'Failed to process upload';
+          setError(msg);
+          pushErrorLog('error', `Upload: ${msg}`);
+        }
+        return;
+      }
+
       const stream = await getCaptureStream(
         mode,
         mode === 'rooted_android' ? loopbackDeviceId.trim() || undefined : undefined
       );
       setCaptureStream(stream);
+      isUploadSessionRef.current = false;
       setActive(true);
       sessionActiveRef.current = true;
       setInterpretStatus('listening');
@@ -748,13 +893,14 @@ function App() {
       };
     } catch (e) {
       sessionActiveRef.current = false;
+      isUploadSessionRef.current = false;
       setInterpretStatus('idle');
       setActive(false);
       const msg = e instanceof Error ? e.message : 'Failed to start capture';
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, pushErrorLog, enqueueSegment, drainSegmentQueue]);
+  }, [mode, loopbackDeviceId, uploadFile, pushErrorLog, enqueueSegment, drainSegmentQueue, finishUploadSession]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -856,11 +1002,13 @@ function App() {
             )}
           </p>
         </div>
-        <PermissionChecker
-          permissionState={permissionState}
-          onDismiss={() => {}}
-          onSwitchToMobileMic={() => setMode('face_to_face')}
-        />
+        {mode !== 'upload_recording' && (
+          <PermissionChecker
+            permissionState={permissionState}
+            onDismiss={() => {}}
+            onSwitchToMobileMic={() => setMode('face_to_face')}
+          />
+        )}
       </header>
 
       <main className="app__main">
@@ -871,6 +1019,9 @@ function App() {
               onModeChange={setMode}
               loopbackDeviceId={loopbackDeviceId}
               onLoopbackDeviceIdChange={setLoopbackDeviceId}
+              uploadFile={uploadFile}
+              onUploadFileChange={setUploadFile}
+              uploadFileInputKey={uploadFileInputKey}
               disabled={active}
             />
 
@@ -902,7 +1053,13 @@ function App() {
               </p>
             )}
 
-            {!active && (
+            {mode === 'upload_recording' && !active && (
+              <p className="app__desktop-hint" role="status">
+                Upload a downloaded Burmese meeting recording. Fill in the scenario profile (who is meeting, topic, glossary) for better results. Same ~1-minute segments as live mode.
+              </p>
+            )}
+
+            {mode !== 'upload_recording' && !active && (
               <p className="app__desktop-hint" role="status">
                 Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
               </p>
@@ -916,7 +1073,7 @@ function App() {
                   onClick={startInterpretation}
                   whileTap={{ scale: 0.98 }}
                 >
-                  Start interpretation
+                  {mode === 'upload_recording' ? 'Start processing' : 'Start interpretation'}
                 </motion.button>
               ) : (
                 <motion.button
@@ -930,27 +1087,34 @@ function App() {
               )}
             </div>
 
-            <label className="app__tts-toggle app__tts-toggle--interpret">
-              <input
-                type="checkbox"
-                checked={playTtsEnabled}
-                onChange={(e) => setPlayTtsEnabled(e.target.checked)}
-              />
-              <span>Play translation aloud</span>
-            </label>
+            {mode !== 'upload_recording' && (
+              <label className="app__tts-toggle app__tts-toggle--interpret">
+                <input
+                  type="checkbox"
+                  checked={playTtsEnabled}
+                  onChange={(e) => setPlayTtsEnabled(e.target.checked)}
+                />
+                <span>Play translation aloud</span>
+              </label>
+            )}
 
-            <WavizVisualizer
-              stream={captureStream}
-              active={active}
-            />
+            {mode !== 'upload_recording' && (
+              <WavizVisualizer
+                stream={captureStream}
+                active={active}
+              />
+            )}
 
             {active && (
               <div className="app__interpret-status">
                 <p className="app__interpret-hint" role="status">
-                  {interpretStatus === 'listening' && (
+                  {mode === 'upload_recording' && interpretStatus === 'processing' && (
+                    <>Processing upload…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  )}
+                  {mode !== 'upload_recording' && interpretStatus === 'listening' && (
                     <>Recording continuously · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if translation lags.</>
                   )}
-                  {interpretStatus === 'processing' && (
+                  {mode !== 'upload_recording' && interpretStatus === 'processing' && (
                     <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
                 </p>

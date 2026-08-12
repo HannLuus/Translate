@@ -1,4 +1,4 @@
-export type CaptureMode = 'desktop' | 'rooted_android' | 'face_to_face';
+export type CaptureMode = 'desktop' | 'rooted_android' | 'face_to_face' | 'upload_recording';
 
 export type SttPath =
   | 'elevenlabs_scribe'

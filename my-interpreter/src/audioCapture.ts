@@ -18,7 +18,7 @@ export const SEGMENT_MS = 60_000;
 /** Audio overlap carried into the next segment so boundaries are not lost. */
 export const SEGMENT_OVERLAP_MS = 5_000;
 /** Emit a shorter final segment on stop if at least this much speech was buffered. */
-const MIN_FINAL_SEGMENT_MS = 5_000;
+export const MIN_FINAL_SEGMENT_MS = 5_000;
 
 const MIN_FINAL_FRAMES = Math.ceil(MIN_FINAL_SEGMENT_MS / FRAME_MS);
 
@@ -82,6 +82,9 @@ export async function getCaptureStream(
   mode: CaptureMode,
   loopbackDeviceId?: string
 ): Promise<MediaStream> {
+  if (mode === 'upload_recording') {
+    throw new Error('Upload recording mode does not use live capture. Choose a file and Start.');
+  }
   if (mode === 'desktop') {
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     if (stream.getAudioTracks().length === 0) {

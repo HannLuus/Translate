@@ -1,11 +1,12 @@
 import { motion } from 'framer-motion';
-import { Monitor, Smartphone, Mic } from 'lucide-react';
+import { Monitor, Smartphone, Mic, Upload } from 'lucide-react';
 import type { CaptureMode } from '../types';
 
 const MODES: { id: CaptureMode; label: string; icon: typeof Monitor }[] = [
   { id: 'desktop', label: 'Desktop (Work PC)', icon: Monitor },
   { id: 'rooted_android', label: 'Rooted Android', icon: Smartphone },
   { id: 'face_to_face', label: 'Face-to-Face (Mic)', icon: Mic },
+  { id: 'upload_recording', label: 'Upload recording', icon: Upload },
 ];
 
 interface PlatformSelectorProps {
@@ -13,6 +14,9 @@ interface PlatformSelectorProps {
   onModeChange: (mode: CaptureMode) => void;
   loopbackDeviceId: string;
   onLoopbackDeviceIdChange: (id: string) => void;
+  uploadFile: File | null;
+  onUploadFileChange: (file: File | null) => void;
+  uploadFileInputKey?: number;
   disabled?: boolean;
 }
 
@@ -21,6 +25,9 @@ export function PlatformSelector({
   onModeChange,
   loopbackDeviceId,
   onLoopbackDeviceIdChange,
+  uploadFile,
+  onUploadFileChange,
+  uploadFileInputKey = 0,
   disabled = false,
 }: PlatformSelectorProps) {
   return (
@@ -64,6 +71,42 @@ export function PlatformSelector({
             On rooted Android, use an app that exposes system audio as a virtual
             device and paste its device ID here. Get the ID from your audio app
             settings or <code>getUserMedia</code> device list.
+          </p>
+        </motion.div>
+      )}
+      {mode === 'upload_recording' && (
+        <motion.div
+          className="platform-selector__upload"
+          initial={{ opacity: 0, height: 0 }}
+          animate={{ opacity: 1, height: 'auto' }}
+          exit={{ opacity: 0, height: 0 }}
+        >
+          <label htmlFor="upload-recording-file">Meeting recording (Burmese audio)</label>
+          <input
+            key={uploadFileInputKey}
+            id="upload-recording-file"
+            type="file"
+            accept="audio/*,.mp3,.m4a,.wav,.webm,.ogg,.aac,.mp4"
+            className="platform-selector__file"
+            disabled={disabled}
+            onChange={(e) => {
+              const file = e.target.files?.[0] ?? null;
+              onUploadFileChange(file);
+            }}
+          />
+          {uploadFile && (
+            <p className="platform-selector__file-name" title={uploadFile.name}>
+              {uploadFile.name}
+              {uploadFile.size > 0
+                ? ` · ${(uploadFile.size / (1024 * 1024)).toFixed(1)} MB`
+                : ''}
+            </p>
+          )}
+          <p className="platform-selector__hint">
+            Download the meeting recording, then Start. Uses your scenario profile
+            (people, topic, glossary) for better transcription and translation.
+            Works best with MP3, WAV, M4A, or WebM. Long files (over ~2 hours) may
+            strain phone memory — prefer desktop for very long meetings.
           </p>
         </motion.div>
       )}

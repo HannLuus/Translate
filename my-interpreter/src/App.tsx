@@ -209,6 +209,14 @@ function App() {
   const uploadAbortRef = useRef<AbortController | null>(null);
   const uploadSegmentTotalRef = useRef(0);
   const [uploadFileInputKey, setUploadFileInputKey] = useState(0);
+  type UploadOutcome = {
+    kind: 'success' | 'empty' | 'failed';
+    decoded: number;
+    translated: number;
+    empty: number;
+    failed: number;
+  };
+  const [uploadOutcome, setUploadOutcome] = useState<UploadOutcome | null>(null);
   const sessionIdRef = useRef('');
   const sessionGenRef = useRef(0);
   const segmentQueueRef = useRef<SegmentJob[]>([]);
@@ -564,6 +572,7 @@ function App() {
     setUploadFile(null);
     setUploadFileInputKey((k) => k + 1);
     setActive(false);
+    setInterpretStatus('idle');
   }, []);
 
   const drainSegmentQueue = useCallback(async () => {
@@ -606,6 +615,14 @@ function App() {
 
     if (sessionGenRef.current !== drainGen) return;
 
+    const stillUnfinished = segmentQueueRef.current.some(
+      (j) => j.status === 'queued' || j.status === 'processing',
+    );
+    if (stillUnfinished) {
+      void drainSegmentQueue();
+      return;
+    }
+
     if (sessionActiveRef.current) {
       setInterpretStatus(isUploadSessionRef.current ? 'processing' : 'listening');
       setSessionStatusLine(
@@ -615,9 +632,56 @@ function App() {
       );
     } else {
       setInterpretStatus('idle');
-      setSessionStatusLine('All segments finished');
       if (isUploadSessionRef.current) {
+        const jobs = segmentQueueRef.current;
+        const translated = jobs.filter((j) => j.status === 'done').length;
+        const emptyJobs = jobs.filter((j) => j.status === 'empty').length;
+        const failedJobs = jobs.filter((j) => j.status === 'failed').length;
+        if (translated > 0) {
+          setSessionStatusLine(`Done · ${translated} segments translated`);
+          setUploadOutcome({
+            kind: 'success',
+            decoded: jobs.length,
+            translated,
+            empty: emptyJobs,
+            failed: failedJobs,
+          });
+        } else if (failedJobs > 0) {
+          setSessionStatusLine(`Finished with errors · ${failedJobs} segments failed`);
+          setUploadOutcome({
+            kind: 'failed',
+            decoded: jobs.length,
+            translated: 0,
+            empty: emptyJobs,
+            failed: failedJobs,
+          });
+          setError('Translation failed for all segments. Check Backend connected at the top, then try again.');
+        } else if (jobs.length > 0) {
+          setSessionStatusLine('Done · no speech detected in recording');
+          setUploadOutcome({
+            kind: 'empty',
+            decoded: jobs.length,
+            translated: 0,
+            empty: emptyJobs,
+            failed: failedJobs,
+          });
+          setError(
+            'Decoding finished but no Burmese speech was detected. Check the file plays correctly in VLC, then try again.',
+          );
+        } else {
+          setSessionStatusLine('Done · no segments were queued');
+          setUploadOutcome({
+            kind: 'empty',
+            decoded: 0,
+            translated: 0,
+            empty: 0,
+            failed: 0,
+          });
+          setError('Audio decoded but no segments were sent for translation. Please try again.');
+        }
         finishUploadSession();
+      } else {
+        setSessionStatusLine('All segments finished');
       }
     }
   }, [activeProfile, useGlossaryAndBriefing, processOneJob, finishUploadSession]);
@@ -729,6 +793,7 @@ function App() {
       setFailedSegmentLocalId(null);
       uploadSegmentTotalRef.current = 0;
       uploadSessionGenRef.current = null;
+      setUploadOutcome(null);
 
       const sessionId = `session-${Date.now()}`;
       sessionIdRef.current = sessionId;
@@ -819,18 +884,15 @@ function App() {
           uploadSegmentTotalRef.current = segmentCount;
           sessionActiveRef.current = false;
           setInterpretStatus('processing');
-          setSessionStatusLine(`Queued ${segmentCount} segments · translating…`);
+          setSessionStatusLine(`Decoded ${segmentCount} segments · translating…`);
 
-          const unfinished = segmentQueueRef.current.some(
-            (j) => j.status === 'queued' || j.status === 'processing',
-          );
-          if (!unfinished && !drainRunningRef.current && activeWorkersRef.current === 0) {
-            finishUploadSession();
-            setInterpretStatus('idle');
-            setSessionStatusLine('All segments finished');
-          } else {
-            void drainSegmentQueue();
+          if (segmentCount > 0 && segmentQueueRef.current.length === 0) {
+            throw new Error(
+              'Audio decoded but segments were not queued. Please reload the page and try again.',
+            );
           }
+
+          void drainSegmentQueue();
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') return;
           if (sessionGenRef.current !== sessionGen) return;
@@ -972,8 +1034,10 @@ function App() {
   }, [backendStatus, backendError]);
 
   const queuedCount = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
+  const showFullUploadScript =
+    mode === 'upload_recording' && (active || uploadOutcome != null || testingMode);
 
-  const visibleSegments = (testingMode || active)
+  const visibleSegments = showFullUploadScript || testingMode || active
     ? translationSegments
     : translationSegments.slice(-6);
 
@@ -1124,10 +1188,10 @@ function App() {
               />
             )}
 
-            {active && (
+            {(active || (mode === 'upload_recording' && (sessionStatusLine || uploadOutcome))) && (
               <div className="app__interpret-status">
                 <p className="app__interpret-hint" role="status">
-                  {mode === 'upload_recording' && interpretStatus === 'processing' && (
+                  {mode === 'upload_recording' && active && interpretStatus === 'processing' && (
                     <>Processing upload…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
                   {mode !== 'upload_recording' && interpretStatus === 'listening' && (
@@ -1135,6 +1199,9 @@ function App() {
                   )}
                   {mode !== 'upload_recording' && interpretStatus === 'processing' && (
                     <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  )}
+                  {mode === 'upload_recording' && uploadOutcome && !active && (
+                    <>Upload complete · see translation panel →</>
                   )}
                 </p>
                 {sessionStatusLine && (
@@ -1205,10 +1272,35 @@ function App() {
         </aside>
 
         <section className="app__workspace" aria-label="Translation">
+          {mode === 'upload_recording' && (active || uploadOutcome || queuedCount > 0) && (
+            <div className="app__upload-progress" role="status">
+              {active && interpretStatus === 'processing' && (
+                <p className="app__upload-progress-title">Working on your recording…</p>
+              )}
+              {!active && uploadOutcome && (
+                <p className="app__upload-progress-title">
+                  {uploadOutcome.kind === 'success'
+                    ? `Translation ready · ${uploadOutcome.translated} segments`
+                    : uploadOutcome.kind === 'failed'
+                      ? `Translation failed · ${uploadOutcome.failed} segments errored`
+                      : 'No speech detected in this recording'}
+                </p>
+              )}
+              {sessionStatusLine && (
+                <p className="app__upload-progress-detail">{sessionStatusLine}</p>
+              )}
+              {active && queuedCount > 0 && (
+                <p className="app__upload-progress-detail">
+                  {queuedCount} segment{queuedCount === 1 ? '' : 's'} still in queue — text will appear below as each finishes.
+                </p>
+              )}
+            </div>
+          )}
+
           <ConversationView
             translationText={visibleSegments.map((s) => s.text).join('\n')}
             isPlayingTts={isPlayingTts}
-            testingMode={testingMode}
+            testingMode={testingMode || mode === 'upload_recording'}
             segments={visibleSegments}
           />
 

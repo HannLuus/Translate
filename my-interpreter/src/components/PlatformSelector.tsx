@@ -1,10 +1,11 @@
 import { useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Monitor, Smartphone, Mic, Upload, CheckCircle2 } from 'lucide-react';
+import { Monitor, Smartphone, Mic, Upload, CheckCircle2, FileText } from 'lucide-react';
 import type { CaptureMode } from '../types';
 
 const MODES: { id: CaptureMode; label: string; icon: typeof Monitor }[] = [
   { id: 'desktop', label: 'Desktop (Work PC)', icon: Monitor },
+  { id: 'english_meeting', label: 'English meeting (Teams)', icon: FileText },
   { id: 'rooted_android', label: 'Rooted Android', icon: Smartphone },
   { id: 'face_to_face', label: 'Face-to-Face (Mic)', icon: Mic },
   { id: 'upload_recording', label: 'From file', icon: Upload },
@@ -19,6 +20,8 @@ interface PlatformSelectorProps {
   onUploadFileChange: (file: File | null) => void;
   uploadFileInputKey?: number;
   disabled?: boolean;
+  uploadEnglishOnly?: boolean;
+  onUploadEnglishOnlyChange?: (value: boolean) => void;
 }
 
 export function PlatformSelector({
@@ -30,6 +33,8 @@ export function PlatformSelector({
   onUploadFileChange,
   uploadFileInputKey = 0,
   disabled = false,
+  uploadEnglishOnly = false,
+  onUploadEnglishOnlyChange,
 }: PlatformSelectorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -138,7 +143,22 @@ export function PlatformSelector({
             Uses your scenario profile (people, topic, glossary) for better results.
             Long recordings (1–2 hours) work on desktop; close other tabs if decoding is slow.
           </p>
+          <label className="platform-selector__english-only">
+            <input
+              type="checkbox"
+              checked={uploadEnglishOnly}
+              onChange={(e) => onUploadEnglishOnlyChange?.(e.target.checked)}
+              disabled={disabled}
+            />
+            <span>English transcription only (no Burmese translation)</span>
+          </label>
         </motion.div>
+      )}
+      {mode === 'english_meeting' && !disabled && (
+        <p className="platform-selector__hint platform-selector__hint--english">
+          Record a Teams or Zoom tab in English. When you click Start, choose the meeting tab and check{' '}
+          <strong>Share tab audio</strong>. Transcript appears in ~1-minute segments — faster than Teams captions.
+        </p>
       )}
     </div>
   );

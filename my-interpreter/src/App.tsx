@@ -58,6 +58,14 @@ const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
 const USE_GLOSSARY_BRIEFING_STORAGE_KEY = 'interpreter-use-glossary-briefing';
 const SCENARIO_PROFILES_KEY = 'interpreter-scenario-profiles';
 const ACTIVE_PROFILE_ID_KEY = 'interpreter-active-profile-id';
+const UPLOAD_ENGLISH_ONLY_KEY = 'interpreter-upload-english-only';
+
+function isEnglishTranscriptionMode(
+  mode: CaptureMode,
+  uploadEnglishOnly: boolean,
+): boolean {
+  return mode === 'english_meeting' || (mode === 'upload_recording' && uploadEnglishOnly);
+}
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
 
@@ -165,12 +173,16 @@ function App() {
     const s = localStorage.getItem(MODE_STORAGE_KEY);
     return (
       s === 'desktop' ||
+      s === 'english_meeting' ||
       s === 'rooted_android' ||
       s === 'face_to_face' ||
       s === 'upload_recording'
     )
       ? s
       : 'face_to_face';
+  });
+  const [uploadEnglishOnly, setUploadEnglishOnly] = useState(() => {
+    return localStorage.getItem(UPLOAD_ENGLISH_ONLY_KEY) === '1';
   });
   const [loopbackDeviceId, setLoopbackDeviceId] = useState(() => {
     return localStorage.getItem(LOOPBACK_STORAGE_KEY) ?? '';
@@ -229,6 +241,7 @@ function App() {
   const flushedIndexesRef = useRef<Set<number>>(new Set());
   const playTtsEnabledRef = useRef(playTtsEnabled);
   playTtsEnabledRef.current = playTtsEnabled;
+  const englishTranscribeRef = useRef(false);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   const recentContextRef = useRef<RecentContextPair[]>([]);
   const termLockRef = useRef<TermLockMap>({});
@@ -307,6 +320,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY, useGlossaryAndBriefing ? '1' : '0');
   }, [useGlossaryAndBriefing]);
+  useEffect(() => {
+    localStorage.setItem(UPLOAD_ENGLISH_ONLY_KEY, uploadEnglishOnly ? '1' : '0');
+  }, [uploadEnglishOnly]);
+
+  const englishTranscriptionSession = isEnglishTranscriptionMode(mode, uploadEnglishOnly);
 
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
@@ -471,7 +489,7 @@ function App() {
           ? ` (${job.segmentIndex} of ${uploadTotal})`
           : '';
       setSessionStatusLine(
-        `Translating segment ${job.segmentIndex}${uploadProgress}` +
+        `${englishTranscribeRef.current ? 'Transcribing' : 'Translating'} segment ${job.segmentIndex}${uploadProgress}` +
           (lagMin > 0 ? ` · catching up · ~${lagMin} min behind` : '') +
           (waiting > 0 ? ` · ${waiting} waiting` : ''),
       );
@@ -485,6 +503,7 @@ function App() {
           termLockSnap,
           recentSnap,
           wantTts,
+          englishTranscribeRef.current,
         );
 
         if (sessionGenRef.current !== owningGen) return;
@@ -496,14 +515,16 @@ function App() {
 
         const burmese = result.burmeseText?.trim() ?? '';
         const english = result.englishText?.trim() ?? '';
-        if (!burmese && !english) {
+        const englishOnly = englishTranscribeRef.current;
+        const hasOutput = englishOnly ? !!english : !!(burmese || english);
+        if (!hasOutput) {
           job.status = 'empty';
           if (flushedIndexesRef.current.has(job.segmentIndex)) {
             // already advanced past this index
           } else {
             pendingDisplayRef.current.set(job.segmentIndex, { english: '', burmese: '', empty: true });
           }
-          pushErrorLog('warn', `Segment ${job.segmentIndex}: empty STT/MT`);
+          pushErrorLog('warn', `Segment ${job.segmentIndex}: empty STT${englishOnly ? '' : '/MT'}`);
         } else if (flushedIndexesRef.current.has(job.segmentIndex)) {
           job.status = 'done';
           upsertTranslation(english, burmese, job.segmentIndex);
@@ -655,7 +676,7 @@ function App() {
             empty: emptyJobs,
             failed: failedJobs,
           });
-          setError('Translation failed for all segments. Check Backend connected at the top, then try again.');
+          setError('Transcription failed for all segments. Check Backend connected at the top, then try again.');
         } else if (jobs.length > 0) {
           setSessionStatusLine('Done · no speech detected in recording');
           setUploadOutcome({
@@ -666,7 +687,9 @@ function App() {
             failed: failedJobs,
           });
           setError(
-            'Decoding finished but no Burmese speech was detected. Check the file plays correctly in VLC, then try again.',
+            englishTranscribeRef.current
+              ? 'Decoding finished but no English speech was detected. Check the file plays correctly, then try again.'
+              : 'Decoding finished but no Burmese speech was detected. Check the file plays correctly in VLC, then try again.',
           );
         } else {
           setSessionStatusLine('Done · no segments were queued');
@@ -780,6 +803,7 @@ function App() {
       // Invalidate any leftover async work from a prior session.
       sessionGenRef.current += 1;
       const sessionGen = sessionGenRef.current;
+      englishTranscribeRef.current = isEnglishTranscriptionMode(mode, uploadEnglishOnly);
 
       setTranslationSegments([]);
       recentContextRef.current = [];
@@ -884,7 +908,11 @@ function App() {
           uploadSegmentTotalRef.current = segmentCount;
           sessionActiveRef.current = false;
           setInterpretStatus('processing');
-          setSessionStatusLine(`Decoded ${segmentCount} segments · translating…`);
+          setSessionStatusLine(
+            englishTranscribeRef.current
+              ? `Decoded ${segmentCount} segments · transcribing…`
+              : `Decoded ${segmentCount} segments · translating…`,
+          );
 
           if (segmentCount > 0 && segmentQueueRef.current.length === 0) {
             throw new Error(
@@ -971,7 +999,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, uploadFile, pushErrorLog, enqueueSegment, drainSegmentQueue, finishUploadSession]);
+  }, [mode, loopbackDeviceId, uploadFile, uploadEnglishOnly, pushErrorLog, enqueueSegment, drainSegmentQueue, finishUploadSession]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -1035,11 +1063,23 @@ function App() {
 
   const queuedCount = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
   const showFullUploadScript =
-    mode === 'upload_recording' && (active || uploadOutcome != null || testingMode);
+    mode === 'upload_recording' && (active || uploadOutcome != null || testingMode || englishTranscriptionSession);
 
-  const visibleSegments = showFullUploadScript || testingMode || active
+  const visibleSegments = showFullUploadScript || testingMode || active || englishTranscriptionSession
     ? translationSegments
     : translationSegments.slice(-6);
+
+  const downloadTranscript = useCallback(() => {
+    const text = translationSegments.map((s) => s.text).join('\n\n').trim();
+    if (!text) return;
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `meeting-transcript-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [translationSegments]);
 
   return (
     <div className={`app${active ? ' app--session' : ''}`}>
@@ -1075,7 +1115,7 @@ function App() {
             )}
           </p>
         </div>
-        {mode !== 'upload_recording' && (
+        {mode !== 'upload_recording' && mode !== 'english_meeting' && (
           <PermissionChecker
             permissionState={permissionState}
             onDismiss={() => {}}
@@ -1099,6 +1139,8 @@ function App() {
               }}
               uploadFileInputKey={uploadFileInputKey}
               disabled={active}
+              uploadEnglishOnly={uploadEnglishOnly}
+              onUploadEnglishOnlyChange={setUploadEnglishOnly}
             />
 
             <label className="app__tts-toggle app__tts-toggle--testing" title="Keep full script on screen for the whole session so you can compare and give feedback.">
@@ -1129,6 +1171,14 @@ function App() {
               </p>
             )}
 
+            {mode === 'english_meeting' && !active && (
+              <p className="app__desktop-hint" role="status">
+                <strong>English transcription</strong> for Teams/Zoom: click Start, pick the meeting tab, enable{' '}
+                <strong>Share tab audio</strong>. Transcript builds in ~{Math.round(SEGMENT_MS / 60000)}-minute chunks.
+                Click Stop when the meeting ends, then download the transcript or generate minutes.
+              </p>
+            )}
+
             {mode === 'upload_recording' && !active && (
               <p className="app__desktop-hint" role="status">
                 <strong>From file</strong> mode: choose your recording above, then click{' '}
@@ -1136,9 +1186,15 @@ function App() {
               </p>
             )}
 
-            {mode !== 'upload_recording' && !active && (
+            {mode !== 'upload_recording' && mode !== 'english_meeting' && !active && (
               <p className="app__desktop-hint" role="status">
                 Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
+              </p>
+            )}
+
+            {mode === 'english_meeting' && !active && (
+              <p className="app__desktop-hint" role="status">
+                Tip: turn on <strong>Testing mode</strong> below to keep the full transcript visible during the meeting.
               </p>
             )}
 
@@ -1156,7 +1212,7 @@ function App() {
                       : undefined
                   }
                 >
-                  {mode === 'upload_recording' ? 'Start processing' : 'Start interpretation'}
+                  {mode === 'upload_recording' ? 'Start processing' : mode === 'english_meeting' ? 'Start transcribing' : 'Start interpretation'}
                 </motion.button>
               ) : (
                 <motion.button
@@ -1170,7 +1226,7 @@ function App() {
               )}
             </div>
 
-            {mode !== 'upload_recording' && (
+            {mode !== 'upload_recording' && mode !== 'english_meeting' && (
               <label className="app__tts-toggle app__tts-toggle--interpret">
                 <input
                   type="checkbox"
@@ -1188,17 +1244,17 @@ function App() {
               />
             )}
 
-            {(active || (mode === 'upload_recording' && (sessionStatusLine || uploadOutcome))) && (
+            {(active || (mode === 'upload_recording' && (sessionStatusLine || uploadOutcome)) || (mode === 'english_meeting' && (sessionStatusLine || active))) && (
               <div className="app__interpret-status">
                 <p className="app__interpret-hint" role="status">
                   {mode === 'upload_recording' && active && interpretStatus === 'processing' && (
                     <>Processing upload…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
                   {mode !== 'upload_recording' && interpretStatus === 'listening' && (
-                    <>Recording continuously · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if translation lags.</>
+                    <>{englishTranscriptionSession ? 'Recording meeting audio' : 'Recording continuously'} · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if {englishTranscriptionSession ? 'transcription' : 'translation'} lags.</>
                   )}
                   {mode !== 'upload_recording' && interpretStatus === 'processing' && (
-                    <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                    <>{englishTranscriptionSession ? 'Transcribing…' : 'Catching up…'}{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
                   {mode === 'upload_recording' && uploadOutcome && !active && (
                     <>Upload complete · see translation panel →</>
@@ -1227,28 +1283,30 @@ function App() {
               </p>
             )}
 
-            <div className="app__response">
-              <p className="app__response-hint" aria-hidden="true">
-                Speak in English — translation appears in Burmese for the other person.
-              </p>
-              <label className="app__tts-toggle app__tts-toggle--response">
-                <input
-                  type="checkbox"
-                  checked={playResponseTtsEnabled}
-                  onChange={(e) => setPlayResponseTtsEnabled(e.target.checked)}
+            {!englishTranscriptionSession && (
+              <div className="app__response">
+                <p className="app__response-hint" aria-hidden="true">
+                  Speak in English — translation appears in Burmese for the other person.
+                </p>
+                <label className="app__tts-toggle app__tts-toggle--response">
+                  <input
+                    type="checkbox"
+                    checked={playResponseTtsEnabled}
+                    onChange={(e) => setPlayResponseTtsEnabled(e.target.checked)}
+                  />
+                  <span>Play response aloud</span>
+                </label>
+                <ResponseButton
+                  onResult={handleResponseResult}
+                  onError={(e) => {
+                    setError(e.message);
+                    pushErrorLog('error', `Response: ${e.message}`);
+                  }}
+                  disabled={active}
+                  playTtsEnabled={playResponseTtsEnabled}
                 />
-                <span>Play response aloud</span>
-              </label>
-              <ResponseButton
-                onResult={handleResponseResult}
-                onError={(e) => {
-                  setError(e.message);
-                  pushErrorLog('error', `Response: ${e.message}`);
-                }}
-                disabled={active}
-                playTtsEnabled={playResponseTtsEnabled}
-              />
-            </div>
+              </div>
+            )}
 
             <div className="app__error-log">
               <motion.button
@@ -1300,12 +1358,26 @@ function App() {
           <ConversationView
             translationText={visibleSegments.map((s) => s.text).join('\n')}
             isPlayingTts={isPlayingTts}
-            testingMode={testingMode || mode === 'upload_recording'}
+            testingMode={testingMode || mode === 'upload_recording' || englishTranscriptionSession}
             segments={visibleSegments}
+            panelLabel={englishTranscriptionSession ? 'Transcript' : 'Translation'}
+            placeholder={englishTranscriptionSession ? 'Transcript will appear here…' : 'Translation will appear here…'}
+            englishTranscriptionOnly={englishTranscriptionSession}
           />
 
           {translationSegments.length > 0 && !active && (
             <div className="app__testing-actions">
+              {englishTranscriptionSession && (
+                <motion.button
+                  type="button"
+                  className="app__btn app__btn--secondary"
+                  disabled={!translationSegments.some((s) => s.text.trim() !== '')}
+                  onClick={downloadTranscript}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  Download transcript
+                </motion.button>
+              )}
               <motion.button
                 type="button"
                 className="app__btn app__btn--start"

@@ -177,6 +177,7 @@ export async function interpretSegment(
   termLock?: TermLockMap,
   recentContext?: RecentContextPair[],
   wantTts = false,
+  englishTranscribeOnly = false,
 ): Promise<InterpretResult> {
   const body = JSON.stringify({
     audioBase64: arrayBufferToBase64(audioPcm16khz),
@@ -184,7 +185,7 @@ export async function interpretSegment(
     meetingContext: capMeetingContext(meetingContext),
     termLock: capTermLock(termLock) ?? {},
     recentContext: (recentContext ?? []).slice(-4),
-    mode: 'segment',
+    mode: englishTranscribeOnly ? 'english_transcribe' : 'segment',
     wantTts,
   });
 

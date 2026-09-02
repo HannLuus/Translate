@@ -662,6 +662,20 @@
   margin: 0.45rem 0 0 0;
 }
 
+.platform-selector__english-only {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  font-size: 0.88rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.platform-selector__english-only input {
+  margin-top: 0.15rem;
+}
+
 .platform-selector__file::file-selector-button {
   margin-right: 0.75rem;
   padding: 0.4rem 0.75rem;

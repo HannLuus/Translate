@@ -85,7 +85,7 @@ export async function getCaptureStream(
   if (mode === 'upload_recording') {
     throw new Error('Upload recording mode does not use live capture. Choose a file and Start.');
   }
-  if (mode === 'desktop') {
+  if (mode === 'desktop' || mode === 'english_meeting') {
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     if (stream.getAudioTracks().length === 0) {
       stream.getTracks().forEach((t) => t.stop());

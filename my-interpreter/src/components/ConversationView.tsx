@@ -6,6 +6,9 @@ interface ConversationViewProps {
   isPlayingTts: boolean;
   testingMode?: boolean;
   segments?: TranslationSegment[];
+  panelLabel?: string;
+  placeholder?: string;
+  englishTranscriptionOnly?: boolean;
 }
 
 export function ConversationView({
@@ -13,6 +16,9 @@ export function ConversationView({
   isPlayingTts,
   testingMode = false,
   segments,
+  panelLabel = 'Translation',
+  placeholder = 'Translation will appear here…',
+  englishTranscriptionOnly = false,
 }: ConversationViewProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -26,7 +32,7 @@ export function ConversationView({
     <div className="conversation-view">
       <div className="conversation-view__panel conversation-view__panel--translation">
         <p className="conversation-view__label">
-          Translation{isPlayingTts && ' — playing'}
+          {panelLabel}{isPlayingTts && ' — playing'}
           {testingMode && ' (testing — full script)'}
         </p>
         <div className="conversation-view__content">
@@ -34,14 +40,14 @@ export function ConversationView({
             <div className="conversation-view__script">
               {segments.map((s) => (
                 <div key={s.id} className="conversation-view__segment">
-                  {s.burmeseText != null && s.burmeseText !== '' ? (
+                  {englishTranscriptionOnly || s.burmeseText == null || s.burmeseText === '' ? (
+                    <span className="conversation-view__english">{s.text}</span>
+                  ) : (
                     <>
                       <span className="conversation-view__burmese">{s.burmeseText}</span>
                       <span className="conversation-view__segment-sep"> → </span>
                       <span className="conversation-view__english">{s.text}</span>
                     </>
-                  ) : (
-                    <span className="conversation-view__response">Response: {s.text}</span>
                   )}
                 </div>
               ))}
@@ -59,7 +65,7 @@ export function ConversationView({
             </div>
           ) : (
             <span className="conversation-view__placeholder">
-              Translation will appear here…
+              {placeholder}
             </span>
           )}
           <div ref={bottomRef} />

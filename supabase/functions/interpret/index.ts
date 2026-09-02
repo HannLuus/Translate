@@ -1,6 +1,7 @@
 import { corsHeaders, handleCors } from '../_shared/cors.ts';
 import { transcribeAndTranslateAudio } from '../_shared/gemini.ts';
 import { createDiagnostics, logInterpretMetrics } from '../_shared/metrics.ts';
+import { transcribeEnglish } from '../_shared/speech.ts';
 import { synthesizeSpeech } from '../_shared/tts.ts';
 import type { TermLockMap } from '../_shared/terminology.ts';
 
@@ -92,6 +93,7 @@ Deno.serve(async (req) => {
 
     let wantTts = false;
     let meetingSegment = false;
+    let englishTranscribe = false;
 
     if (contentType.includes('application/json')) {
       const body = await req.json() as {
@@ -114,6 +116,7 @@ Deno.serve(async (req) => {
       recentContext = parseRecentContext(body.recentContext);
       wantTts = body.wantTts === true;
       meetingSegment = body.mode === 'segment';
+      englishTranscribe = body.mode === 'english_transcribe';
     } else {
       const arrayBuffer = await req.arrayBuffer();
       audioBytes = new Uint8Array(arrayBuffer);
@@ -122,6 +125,7 @@ Deno.serve(async (req) => {
       recentContext = parseRecentContextHeader(req.headers.get('x-recent-context'));
       wantTts = req.headers.get('x-want-tts') === '1';
       meetingSegment = req.headers.get('x-interpret-mode') === 'segment';
+      englishTranscribe = req.headers.get('x-interpret-mode') === 'english_transcribe';
     }
 
     if (!audioBytes.length) {
@@ -131,19 +135,38 @@ Deno.serve(async (req) => {
       );
     }
 
-    const { burmeseText, englishText, diagnostics: partialDiagnostics, termLock: updatedLock } =
-      await transcribeAndTranslateAudio(
+    let burmeseText = '';
+    let englishText = '';
+    let partialDiagnostics;
+    let updatedLock: TermLockMap = termLock;
+
+    if (englishTranscribe) {
+      englishText = await transcribeEnglish(audioBytes);
+      partialDiagnostics = {
+        sttPath: 'speech_api' as const,
+        sttConfidence: englishText.trim() ? 0.85 : null,
+        fallbackReason: null,
+        secondPassUsed: false,
+      };
+    } else {
+      const result = await transcribeAndTranslateAudio(
         audioBytes,
         meetingContext,
         termLock,
         recentContext,
         { meetingSegment },
       );
+      burmeseText = result.burmeseText;
+      englishText = result.englishText;
+      partialDiagnostics = result.diagnostics;
+      updatedLock = result.termLock;
+    }
 
     const diagnostics = createDiagnostics(startedAt, partialDiagnostics, burmeseText, englishText);
     logInterpretMetrics(diagnostics);
     console.info('[interpret-path]', JSON.stringify({
       meetingSegment,
+      englishTranscribe,
       wantTts,
       ttsSkipped: !wantTts || !englishText,
       latencyMs: diagnostics.latencyMs,

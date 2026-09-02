@@ -33,7 +33,7 @@ export function WavizVisualizer({ stream, active }: WavizVisualizerProps) {
   if (!active) {
     return (
       <div className="waviz-visualizer waviz-visualizer--idle" aria-live="polite">
-        <p>Start interpretation to see live audio levels.</p>
+        <p>Start recording to see live audio levels.</p>
         <div className="waviz-visualizer__idle-bars" aria-hidden>
           {[1, 2, 3, 4, 5, 6, 7].map((i) => (
             <span key={i} className="waviz-visualizer__idle-bar" />

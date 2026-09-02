@@ -6,7 +6,7 @@ import { ConversationView } from './components/ConversationView';
 import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
-import { getCaptureStream, captureAudioSegments, SEGMENT_MS } from './audioCapture';
+import { getCaptureStream, getRecordMeetingCapture, captureAudioSegments, SEGMENT_MS } from './audioCapture';
 import { startMeetingRecording } from './meetingRecorder';
 import { decodeAudioFileToSegments, LONG_UPLOAD_WARN_MS } from './audioFileSegments';
 import {
@@ -999,13 +999,13 @@ function App() {
       }
 
       if (mode === 'record_meeting') {
-        const stream = await getCaptureStream('record_meeting');
+        const { stream, cleanup: cleanupCapture } = await getRecordMeetingCapture();
         setCaptureStream(stream);
         isUploadSessionRef.current = false;
         setActive(true);
         sessionActiveRef.current = true;
         setInterpretStatus('listening');
-        setSessionStatusLine('Recording meeting — click Stop when the meeting ends.');
+        setSessionStatusLine('Recording meeting (tab audio + your mic) — click Stop when done.');
 
         const wakeOk = await requestWakeLock();
         if (!wakeOk) {
@@ -1028,7 +1028,7 @@ function App() {
           void (async () => {
             try {
               const file = await stopRecording();
-              stream.getTracks().forEach((t) => t.stop());
+              cleanupCapture();
               setCaptureStream(null);
               releaseWakeLock();
 
@@ -1036,6 +1036,9 @@ function App() {
               uploadAbortRef.current = abort;
               await runRecordingFilePipeline(file, abort);
             } catch (e) {
+              cleanupCapture();
+              setCaptureStream(null);
+              releaseWakeLock();
               if (sessionGenRef.current !== sessionGen) return;
               setActive(false);
               setInterpretStatus('idle');
@@ -1231,7 +1234,7 @@ function App() {
             )}
           </p>
         </div>
-        {mode !== 'upload_recording' && mode !== 'record_meeting' && (
+        {mode !== 'upload_recording' && (
           <PermissionChecker
             permissionState={permissionState}
             onDismiss={() => {}}
@@ -1364,7 +1367,7 @@ function App() {
               <div className="app__interpret-status">
                 <p className="app__interpret-hint" role="status">
                   {mode === 'record_meeting' && interpretStatus === 'listening' && (
-                    <>Recording meeting — click <strong>Stop</strong> when the call ends. No processing during the call.</>
+                    <>Recording tab audio + your microphone — click <strong>Stop</strong> when the call ends.</>
                   )}
                   {mode === 'upload_recording' && active && interpretStatus === 'processing' && minutesOnlySession && (
                     <>Processing recording for meeting minutes…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>

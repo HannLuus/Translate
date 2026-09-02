@@ -85,12 +85,16 @@ export async function getCaptureStream(
   if (mode === 'upload_recording') {
     throw new Error('Upload recording mode does not use live capture. Choose a file and Start.');
   }
-  if (mode === 'desktop' || mode === 'record_meeting') {
+  if (mode === 'desktop') {
     const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     if (stream.getAudioTracks().length === 0) {
       stream.getTracks().forEach((t) => t.stop());
       throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
     }
+    return stream;
+  }
+  if (mode === 'record_meeting') {
+    const { stream } = await getRecordMeetingCapture();
     return stream;
   }
   if (mode === 'rooted_android' && loopbackDeviceId) {
@@ -101,6 +105,73 @@ export async function getCaptureStream(
   return navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
+}
+
+/**
+ * Tab audio = other participants (Teams output). Mic = your voice.
+ * Both are mixed so the saved recording is a full two-way meeting.
+ */
+export async function getRecordMeetingCapture(): Promise<{
+  stream: MediaStream;
+  cleanup: () => void;
+}> {
+  const tabStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  if (tabStream.getAudioTracks().length === 0) {
+    tabStream.getTracks().forEach((t) => t.stop());
+    throw new Error(DESKTOP_NO_AUDIO_MESSAGE);
+  }
+
+  let micStream: MediaStream;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch {
+    tabStream.getTracks().forEach((t) => t.stop());
+    throw new Error(
+      'Microphone access is required to record your side of the conversation. Allow the mic when the browser asks, then click Start recording again.',
+    );
+  }
+
+  const mixContext = new AudioContext({ sampleRate: SAMPLE_RATE_CAPTURE });
+  if (mixContext.state === 'suspended') {
+    try {
+      await mixContext.resume();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const destination = mixContext.createMediaStreamDestination();
+  const tabSource = mixContext.createMediaStreamSource(new MediaStream(tabStream.getAudioTracks()));
+  const micSource = mixContext.createMediaStreamSource(micStream);
+  tabSource.connect(destination);
+  micSource.connect(destination);
+
+  const mixedTrack = destination.stream.getAudioTracks()[0];
+  if (!mixedTrack) {
+    tabStream.getTracks().forEach((t) => t.stop());
+    micStream.getTracks().forEach((t) => t.stop());
+    await mixContext.close();
+    throw new Error('Could not combine tab audio with your microphone.');
+  }
+
+  const tracks: MediaStreamTrack[] = [mixedTrack, ...tabStream.getVideoTracks()];
+  const stream = new MediaStream(tracks);
+
+  const cleanup = () => {
+    tabStream.getTracks().forEach((t) => t.stop());
+    micStream.getTracks().forEach((t) => t.stop());
+    try {
+      tabSource.disconnect();
+      micSource.disconnect();
+      void mixContext.close();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  return { stream, cleanup };
 }
 
 export interface SegmentCallback {

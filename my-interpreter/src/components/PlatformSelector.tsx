@@ -58,9 +58,9 @@ export function PlatformSelector({
       </div>
       {mode === 'record_meeting' && !disabled && (
         <p className="platform-selector__hint platform-selector__hint--english">
-          Record your Teams or Zoom call. When you click Start, choose the meeting tab and check{' '}
-          <strong>Share tab audio</strong>. Nothing is transcribed during the call — click Stop when
-          the meeting ends and meeting minutes are generated from the recording.
+          Records <strong>both sides</strong>: Teams tab audio (other people) plus your microphone (you).
+          When you click Start, allow <strong>screen/tab share with audio</strong> and your <strong>microphone</strong>.
+          Headphones recommended so your voice is not picked up twice.
         </p>
       )}
       {mode === 'rooted_android' && (

@@ -7,6 +7,7 @@ import { WavizVisualizer } from './components/WavizVisualizer';
 import { ResponseButton } from './components/ResponseButton';
 import { ScenarioProfilePanel } from './components/ScenarioProfilePanel';
 import { getCaptureStream, captureAudioSegments, SEGMENT_MS } from './audioCapture';
+import { startMeetingRecording } from './meetingRecorder';
 import { decodeAudioFileToSegments, LONG_UPLOAD_WARN_MS } from './audioFileSegments';
 import {
   interpretSegment,
@@ -58,13 +59,24 @@ const TESTING_MODE_STORAGE_KEY = 'interpreter-testing-mode';
 const USE_GLOSSARY_BRIEFING_STORAGE_KEY = 'interpreter-use-glossary-briefing';
 const SCENARIO_PROFILES_KEY = 'interpreter-scenario-profiles';
 const ACTIVE_PROFILE_ID_KEY = 'interpreter-active-profile-id';
-const UPLOAD_ENGLISH_ONLY_KEY = 'interpreter-upload-english-only';
+const UPLOAD_MINUTES_ONLY_KEY = 'interpreter-upload-minutes-only';
 
-function isEnglishTranscriptionMode(
-  mode: CaptureMode,
-  uploadEnglishOnly: boolean,
-): boolean {
-  return mode === 'english_meeting' || (mode === 'upload_recording' && uploadEnglishOnly);
+function isMinutesOnlyMode(mode: CaptureMode, uploadMinutesOnly: boolean): boolean {
+  return mode === 'record_meeting' || (mode === 'upload_recording' && uploadMinutesOnly);
+}
+
+function normalizeStoredMode(stored: string | null): CaptureMode {
+  if (stored === 'english_meeting') return 'record_meeting';
+  if (
+    stored === 'desktop' ||
+    stored === 'record_meeting' ||
+    stored === 'rooted_android' ||
+    stored === 'face_to_face' ||
+    stored === 'upload_recording'
+  ) {
+    return stored;
+  }
+  return 'face_to_face';
 }
 
 type ErrorLogEntry = { timestamp: string; type: string; message: string };
@@ -169,20 +181,11 @@ function App() {
     return stored !== '0';
   });
 
-  const [mode, setMode] = useState<CaptureMode>(() => {
-    const s = localStorage.getItem(MODE_STORAGE_KEY);
-    return (
-      s === 'desktop' ||
-      s === 'english_meeting' ||
-      s === 'rooted_android' ||
-      s === 'face_to_face' ||
-      s === 'upload_recording'
-    )
-      ? s
-      : 'face_to_face';
-  });
-  const [uploadEnglishOnly, setUploadEnglishOnly] = useState(() => {
-    return localStorage.getItem(UPLOAD_ENGLISH_ONLY_KEY) === '1';
+  const [mode, setMode] = useState<CaptureMode>(() => normalizeStoredMode(localStorage.getItem(MODE_STORAGE_KEY)));
+  const [uploadMinutesOnly, setUploadMinutesOnly] = useState(() => {
+    const stored = localStorage.getItem(UPLOAD_MINUTES_ONLY_KEY);
+    if (stored != null) return stored === '1';
+    return localStorage.getItem('interpreter-upload-english-only') === '1';
   });
   const [loopbackDeviceId, setLoopbackDeviceId] = useState(() => {
     return localStorage.getItem(LOOPBACK_STORAGE_KEY) ?? '';
@@ -242,6 +245,8 @@ function App() {
   const playTtsEnabledRef = useRef(playTtsEnabled);
   playTtsEnabledRef.current = playTtsEnabled;
   const englishTranscribeRef = useRef(false);
+  const minutesOnlyRef = useRef(false);
+  const minutesScriptRef = useRef<{ english: string; segmentIndex: number }[]>([]);
   const currentTtsRef = useRef<HTMLAudioElement | null>(null);
   const recentContextRef = useRef<RecentContextPair[]>([]);
   const termLockRef = useRef<TermLockMap>({});
@@ -321,10 +326,10 @@ function App() {
     localStorage.setItem(USE_GLOSSARY_BRIEFING_STORAGE_KEY, useGlossaryAndBriefing ? '1' : '0');
   }, [useGlossaryAndBriefing]);
   useEffect(() => {
-    localStorage.setItem(UPLOAD_ENGLISH_ONLY_KEY, uploadEnglishOnly ? '1' : '0');
-  }, [uploadEnglishOnly]);
+    localStorage.setItem(UPLOAD_MINUTES_ONLY_KEY, uploadMinutesOnly ? '1' : '0');
+  }, [uploadMinutesOnly]);
 
-  const englishTranscriptionSession = isEnglishTranscriptionMode(mode, uploadEnglishOnly);
+  const minutesOnlySession = isMinutesOnlyMode(mode, uploadMinutesOnly);
 
   const playTts = useCallback((base64: string) => {
     if (currentTtsRef.current) {
@@ -489,7 +494,7 @@ function App() {
           ? ` (${job.segmentIndex} of ${uploadTotal})`
           : '';
       setSessionStatusLine(
-        `${englishTranscribeRef.current ? 'Transcribing' : 'Translating'} segment ${job.segmentIndex}${uploadProgress}` +
+        `${minutesOnlyRef.current ? 'Processing recording' : englishTranscribeRef.current ? 'Transcribing' : 'Translating'} segment ${job.segmentIndex}${uploadProgress}` +
           (lagMin > 0 ? ` · catching up · ~${lagMin} min behind` : '') +
           (waiting > 0 ? ` · ${waiting} waiting` : ''),
       );
@@ -527,12 +532,20 @@ function App() {
           pushErrorLog('warn', `Segment ${job.segmentIndex}: empty STT${englishOnly ? '' : '/MT'}`);
         } else if (flushedIndexesRef.current.has(job.segmentIndex)) {
           job.status = 'done';
-          upsertTranslation(english, burmese, job.segmentIndex);
-          if (wantTts && result.audioBase64) playTts(result.audioBase64);
+          if (minutesOnlyRef.current) {
+            if (english) minutesScriptRef.current.push({ english, segmentIndex: job.segmentIndex });
+          } else {
+            upsertTranslation(english, burmese, job.segmentIndex);
+            if (wantTts && result.audioBase64) playTts(result.audioBase64);
+          }
         } else {
           job.status = 'done';
-          pendingDisplayRef.current.set(job.segmentIndex, { english, burmese, empty: false });
-          if (wantTts && result.audioBase64) playTts(result.audioBase64);
+          if (minutesOnlyRef.current) {
+            if (english) minutesScriptRef.current.push({ english, segmentIndex: job.segmentIndex });
+          } else {
+            pendingDisplayRef.current.set(job.segmentIndex, { english, burmese, empty: false });
+            if (wantTts && result.audioBase64) playTts(result.audioBase64);
+          }
         }
 
         job.pcm = new ArrayBuffer(0);
@@ -542,7 +555,7 @@ function App() {
           attempts: job.attempts,
           revision: job.revision,
         });
-        flushOrderedDisplay();
+        if (!minutesOnlyRef.current) flushOrderedDisplay();
         bumpQueueUi();
         return;
       } catch (e) {
@@ -594,7 +607,41 @@ function App() {
     setUploadFileInputKey((k) => k + 1);
     setActive(false);
     setInterpretStatus('idle');
+    minutesScriptRef.current = [];
   }, []);
+
+  const generateMinutesFromRecording = useCallback(async (combinedContext: string) => {
+    const parts = [...minutesScriptRef.current].sort((a, b) => a.segmentIndex - b.segmentIndex);
+    const fullScript = parts.map((s) => s.english).join('\n').trim();
+    if (!fullScript) {
+      const msg = 'No speech detected in the recording. Check that tab audio was shared.';
+      setError(msg);
+      setMinutesStatus('error');
+      setMinutesError(msg);
+      return false;
+    }
+    setSessionStatusLine('Writing meeting minutes…');
+    setMinutesStatus('loading');
+    setMinutesError(null);
+    try {
+      const result = await generateMeetingMinutes(
+        fullScript,
+        combinedContext || undefined,
+        parts.map((s) => ({ english: s.english, segmentIndex: s.segmentIndex })),
+      );
+      setMinutesResult(result);
+      setMinutesStatus('success');
+      setSessionStatusLine('Meeting minutes ready');
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Meeting minutes failed';
+      setMinutesError(msg);
+      setMinutesStatus('error');
+      setError(msg);
+      pushErrorLog('error', `Meeting minutes: ${msg}`);
+      return false;
+    }
+  }, [pushErrorLog]);
 
   const drainSegmentQueue = useCallback(async () => {
     if (drainRunningRef.current) return;
@@ -658,6 +705,23 @@ function App() {
         const translated = jobs.filter((j) => j.status === 'done').length;
         const emptyJobs = jobs.filter((j) => j.status === 'empty').length;
         const failedJobs = jobs.filter((j) => j.status === 'failed').length;
+
+        if (minutesOnlyRef.current) {
+          if (translated > 0) {
+            await generateMinutesFromRecording(combinedContext);
+          } else if (failedJobs > 0) {
+            setSessionStatusLine('Could not process the recording');
+            setError('Processing failed. Check Backend connected at the top, then try again.');
+          } else if (jobs.length > 0) {
+            setSessionStatusLine('No speech detected in recording');
+            setError('No speech detected in the recording. Check that tab audio was shared.');
+          } else {
+            setError('Recording was empty. Share tab audio when selecting the meeting tab.');
+          }
+          finishUploadSession();
+          return;
+        }
+
         if (translated > 0) {
           setSessionStatusLine(`Done · ${translated} segments translated`);
           setUploadOutcome({
@@ -707,7 +771,7 @@ function App() {
         setSessionStatusLine('All segments finished');
       }
     }
-  }, [activeProfile, useGlossaryAndBriefing, processOneJob, finishUploadSession]);
+  }, [activeProfile, useGlossaryAndBriefing, processOneJob, finishUploadSession, generateMinutesFromRecording]);
 
   const enqueueSegment = useCallback((pcm: ArrayBuffer, segmentIndex: number, durationMs: number) => {
     const job: SegmentJob = {
@@ -803,7 +867,9 @@ function App() {
       // Invalidate any leftover async work from a prior session.
       sessionGenRef.current += 1;
       const sessionGen = sessionGenRef.current;
-      englishTranscribeRef.current = isEnglishTranscriptionMode(mode, uploadEnglishOnly);
+      minutesOnlyRef.current = isMinutesOnlyMode(mode, uploadMinutesOnly);
+      englishTranscribeRef.current = minutesOnlyRef.current;
+      minutesScriptRef.current = [];
 
       setTranslationSegments([]);
       recentContextRef.current = [];
@@ -829,6 +895,81 @@ function App() {
 
       if (sessionGenRef.current !== sessionGen) return;
 
+      const runRecordingFilePipeline = async (file: File, abort: AbortController) => {
+        isUploadSessionRef.current = true;
+        uploadSessionGenRef.current = sessionGen;
+        setCaptureStream(null);
+        setActive(true);
+        sessionActiveRef.current = true;
+        setInterpretStatus('processing');
+        setSessionStatusLine('Processing recording…');
+
+        stopCaptureRef.current = () => {
+          abort.abort();
+          sessionActiveRef.current = false;
+          uploadAbortRef.current = null;
+          void drainSegmentQueue();
+          setInterpretStatus('processing');
+          setSessionStatusLine('Finishing processing…');
+        };
+
+        const { segmentCount } = await decodeAudioFileToSegments(
+          file,
+          (pcm, meta) => {
+            if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
+            uploadSegmentTotalRef.current = meta.segmentIndex;
+            if (minutesOnlyRef.current) {
+              setSessionStatusLine(`Processing recording… part ${meta.segmentIndex}`);
+            } else {
+              const total = uploadSegmentTotalRef.current;
+              setSessionStatusLine(
+                total > 0
+                  ? `Queued segment ${meta.segmentIndex} of ~${total}…`
+                  : `Queued segment ${meta.segmentIndex}…`,
+              );
+            }
+            enqueueSegment(pcm, meta.segmentIndex, meta.durationMs);
+          },
+          {
+            signal: abort.signal,
+            onDecodeProgress: ({ chunkIndex, chunkCount }) => {
+              if (sessionGenRef.current !== sessionGen) return;
+              setSessionStatusLine(`Processing recording… part ${chunkIndex} of ${chunkCount}`);
+            },
+            onDecoded: ({ durationMs, estimatedSegments }) => {
+              if (sessionGenRef.current !== sessionGen) return;
+              uploadSegmentTotalRef.current = estimatedSegments;
+              if (durationMs >= LONG_UPLOAD_WARN_MS) {
+                const hours = Math.round(durationMs / 3_600_000);
+                pushErrorLog('warn', `Long recording (~${hours} h) — processing may take several minutes`);
+                setSessionStatusLine(`Long recording (~${hours} h) · processing in parts…`);
+              } else if (minutesOnlyRef.current) {
+                setSessionStatusLine('Recording loaded · preparing meeting minutes…');
+              } else {
+                setSessionStatusLine(`Decoded · ~${estimatedSegments} segments · starting translation…`);
+              }
+            },
+          },
+        );
+
+        if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
+
+        uploadSegmentTotalRef.current = segmentCount;
+        sessionActiveRef.current = false;
+        setInterpretStatus('processing');
+        setSessionStatusLine(
+          minutesOnlyRef.current
+            ? 'Analyzing recording…'
+            : `Decoded ${segmentCount} segments · translating…`,
+        );
+
+        if (segmentCount > 0 && segmentQueueRef.current.length === 0) {
+          throw new Error('Audio decoded but segments were not queued. Please reload the page and try again.');
+        }
+
+        void drainSegmentQueue();
+      };
+
       if (mode === 'upload_recording') {
         const file = uploadFile;
         if (!file) {
@@ -840,87 +981,9 @@ function App() {
 
         const abort = new AbortController();
         uploadAbortRef.current = abort;
-        isUploadSessionRef.current = true;
-        uploadSessionGenRef.current = sessionGen;
-        setCaptureStream(null);
-        setActive(true);
-        sessionActiveRef.current = true;
-        setInterpretStatus('processing');
-        setSessionStatusLine('Decoding audio…');
-
-        stopCaptureRef.current = () => {
-          abort.abort();
-          sessionActiveRef.current = false;
-          uploadAbortRef.current = null;
-          void drainSegmentQueue();
-          if (currentTtsRef.current) {
-            currentTtsRef.current.pause();
-            currentTtsRef.current = null;
-            setIsPlayingTts(false);
-          }
-          setInterpretStatus('processing');
-          setSessionStatusLine('Finishing any segments still translating…');
-        };
 
         try {
-          const { segmentCount } = await decodeAudioFileToSegments(
-            file,
-            (pcm, meta) => {
-              if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
-              uploadSegmentTotalRef.current = meta.segmentIndex;
-              const total = uploadSegmentTotalRef.current;
-              setSessionStatusLine(
-                total > 0
-                  ? `Queued segment ${meta.segmentIndex} of ~${total}…`
-                  : `Queued segment ${meta.segmentIndex}…`,
-              );
-              enqueueSegment(pcm, meta.segmentIndex, meta.durationMs);
-            },
-            {
-              signal: abort.signal,
-              onDecodeProgress: ({ chunkIndex, chunkCount }) => {
-                if (sessionGenRef.current !== sessionGen) return;
-                setSessionStatusLine(`Decoding audio… part ${chunkIndex} of ${chunkCount}`);
-              },
-              onDecoded: ({ durationMs, estimatedSegments }) => {
-                if (sessionGenRef.current !== sessionGen) return;
-                uploadSegmentTotalRef.current = estimatedSegments;
-                if (durationMs >= LONG_UPLOAD_WARN_MS) {
-                  const hours = Math.round(durationMs / 3_600_000);
-                  pushErrorLog(
-                    'warn',
-                    `Long recording (~${hours} h) — decoding may take several minutes on desktop`,
-                  );
-                  setSessionStatusLine(
-                    `Long recording (~${hours} h) · decoding in parts · ~${estimatedSegments} segments expected…`,
-                  );
-                } else {
-                  setSessionStatusLine(
-                    `Decoded · ~${estimatedSegments} segments · starting translation…`,
-                  );
-                }
-              },
-            },
-          );
-
-          if (abort.signal.aborted || sessionGenRef.current !== sessionGen) return;
-
-          uploadSegmentTotalRef.current = segmentCount;
-          sessionActiveRef.current = false;
-          setInterpretStatus('processing');
-          setSessionStatusLine(
-            englishTranscribeRef.current
-              ? `Decoded ${segmentCount} segments · transcribing…`
-              : `Decoded ${segmentCount} segments · translating…`,
-          );
-
-          if (segmentCount > 0 && segmentQueueRef.current.length === 0) {
-            throw new Error(
-              'Audio decoded but segments were not queued. Please reload the page and try again.',
-            );
-          }
-
-          void drainSegmentQueue();
+          await runRecordingFilePipeline(file, abort);
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') return;
           if (sessionGenRef.current !== sessionGen) return;
@@ -932,6 +995,71 @@ function App() {
           setError(msg);
           pushErrorLog('error', `Upload: ${msg}`);
         }
+        return;
+      }
+
+      if (mode === 'record_meeting') {
+        const stream = await getCaptureStream('record_meeting');
+        setCaptureStream(stream);
+        isUploadSessionRef.current = false;
+        setActive(true);
+        sessionActiveRef.current = true;
+        setInterpretStatus('listening');
+        setSessionStatusLine('Recording meeting — click Stop when the meeting ends.');
+
+        const wakeOk = await requestWakeLock();
+        if (!wakeOk) {
+          pushErrorLog('warn', 'Wake lock unavailable — keep the screen on during the meeting');
+          setError('Could not keep the screen awake. Leave this tab visible during the meeting.');
+        }
+
+        const { stop: stopRecording } = await startMeetingRecording(stream);
+        let stopping = false;
+
+        const finishRecording = () => {
+          if (stopping) return;
+          stopping = true;
+          stopCaptureRef.current = null;
+          sessionActiveRef.current = false;
+          setActive(true);
+          setInterpretStatus('processing');
+          setSessionStatusLine('Saving recording…');
+
+          void (async () => {
+            try {
+              const file = await stopRecording();
+              stream.getTracks().forEach((t) => t.stop());
+              setCaptureStream(null);
+              releaseWakeLock();
+
+              const abort = new AbortController();
+              uploadAbortRef.current = abort;
+              await runRecordingFilePipeline(file, abort);
+            } catch (e) {
+              if (sessionGenRef.current !== sessionGen) return;
+              setActive(false);
+              setInterpretStatus('idle');
+              setSessionStatusLine('');
+              const msg = e instanceof Error ? e.message : 'Failed to save recording';
+              setError(msg);
+              pushErrorLog('error', `Record meeting: ${msg}`);
+            }
+          })();
+        };
+
+        stopCaptureRef.current = finishRecording;
+
+        stream.getTracks().forEach((t) => {
+          t.addEventListener(
+            'ended',
+            () => {
+              setError('Audio share ended. Processing what was recorded…');
+              finishRecording();
+            },
+            { once: true },
+          );
+        });
+
         return;
       }
 
@@ -999,7 +1127,7 @@ function App() {
       setError(msg);
       pushErrorLog('error', `Start capture: ${msg}`);
     }
-  }, [mode, loopbackDeviceId, uploadFile, uploadEnglishOnly, pushErrorLog, enqueueSegment, drainSegmentQueue, finishUploadSession]);
+  }, [mode, loopbackDeviceId, uploadFile, uploadMinutesOnly, pushErrorLog, enqueueSegment, drainSegmentQueue, finishUploadSession]);
 
   const stopInterpretation = useCallback(() => {
     stopCaptureRef.current?.();
@@ -1063,23 +1191,11 @@ function App() {
 
   const queuedCount = segmentQueueRef.current.filter((j) => j.status === 'queued' || j.status === 'processing').length;
   const showFullUploadScript =
-    mode === 'upload_recording' && (active || uploadOutcome != null || testingMode || englishTranscriptionSession);
+    mode === 'upload_recording' && !minutesOnlySession && (active || uploadOutcome != null || testingMode);
 
-  const visibleSegments = showFullUploadScript || testingMode || active || englishTranscriptionSession
+  const visibleSegments = showFullUploadScript || (testingMode && !minutesOnlySession) || (active && !minutesOnlySession)
     ? translationSegments
     : translationSegments.slice(-6);
-
-  const downloadTranscript = useCallback(() => {
-    const text = translationSegments.map((s) => s.text).join('\n\n').trim();
-    if (!text) return;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `meeting-transcript-${new Date().toISOString().slice(0, 10)}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [translationSegments]);
 
   return (
     <div className={`app${active ? ' app--session' : ''}`}>
@@ -1115,7 +1231,7 @@ function App() {
             )}
           </p>
         </div>
-        {mode !== 'upload_recording' && mode !== 'english_meeting' && (
+        {mode !== 'upload_recording' && mode !== 'record_meeting' && (
           <PermissionChecker
             permissionState={permissionState}
             onDismiss={() => {}}
@@ -1139,10 +1255,11 @@ function App() {
               }}
               uploadFileInputKey={uploadFileInputKey}
               disabled={active}
-              uploadEnglishOnly={uploadEnglishOnly}
-              onUploadEnglishOnlyChange={setUploadEnglishOnly}
+              uploadMinutesOnly={uploadMinutesOnly}
+              onUploadMinutesOnlyChange={setUploadMinutesOnly}
             />
 
+            {mode !== 'record_meeting' && (
             <label className="app__tts-toggle app__tts-toggle--testing" title="Keep full script on screen for the whole session so you can compare and give feedback.">
               <input
                 type="checkbox"
@@ -1151,6 +1268,7 @@ function App() {
               />
               <span>Testing mode — keep full script</span>
             </label>
+            )}
 
             {!active && (
               <ScenarioProfilePanel
@@ -1171,30 +1289,22 @@ function App() {
               </p>
             )}
 
-            {mode === 'english_meeting' && !active && (
+            {mode === 'upload_recording' && !active && uploadMinutesOnly && (
               <p className="app__desktop-hint" role="status">
-                <strong>English transcription</strong> for Teams/Zoom: click Start, pick the meeting tab, enable{' '}
-                <strong>Share tab audio</strong>. Transcript builds in ~{Math.round(SEGMENT_MS / 60000)}-minute chunks.
-                Click Stop when the meeting ends, then download the transcript or generate minutes.
+                Upload an English meeting recording — the app will generate meeting minutes when processing finishes.
               </p>
             )}
 
-            {mode === 'upload_recording' && !active && (
+            {mode === 'upload_recording' && !active && !uploadMinutesOnly && (
               <p className="app__desktop-hint" role="status">
                 <strong>From file</strong> mode: choose your recording above, then click{' '}
                 <strong>Start processing</strong>. Fill in the scenario profile for better results.
               </p>
             )}
 
-            {mode !== 'upload_recording' && mode !== 'english_meeting' && !active && (
+            {mode !== 'upload_recording' && mode !== 'record_meeting' && !active && (
               <p className="app__desktop-hint" role="status">
                 Mode: batch segments (~1 min each, overlapping). You will be a few minutes behind — by design, for clearer Burmese→English.
-              </p>
-            )}
-
-            {mode === 'english_meeting' && !active && (
-              <p className="app__desktop-hint" role="status">
-                Tip: turn on <strong>Testing mode</strong> below to keep the full transcript visible during the meeting.
               </p>
             )}
 
@@ -1212,7 +1322,13 @@ function App() {
                       : undefined
                   }
                 >
-                  {mode === 'upload_recording' ? 'Start processing' : mode === 'english_meeting' ? 'Start transcribing' : 'Start interpretation'}
+                  {mode === 'upload_recording'
+                    ? uploadMinutesOnly
+                      ? 'Generate minutes'
+                      : 'Start processing'
+                    : mode === 'record_meeting'
+                      ? 'Start recording'
+                      : 'Start interpretation'}
                 </motion.button>
               ) : (
                 <motion.button
@@ -1226,7 +1342,7 @@ function App() {
               )}
             </div>
 
-            {mode !== 'upload_recording' && mode !== 'english_meeting' && (
+            {mode !== 'upload_recording' && mode !== 'record_meeting' && (
               <label className="app__tts-toggle app__tts-toggle--interpret">
                 <input
                   type="checkbox"
@@ -1244,19 +1360,28 @@ function App() {
               />
             )}
 
-            {(active || (mode === 'upload_recording' && (sessionStatusLine || uploadOutcome)) || (mode === 'english_meeting' && (sessionStatusLine || active))) && (
+            {(active || (mode === 'upload_recording' && (sessionStatusLine || uploadOutcome)) || (mode === 'record_meeting' && (sessionStatusLine || active))) && (
               <div className="app__interpret-status">
                 <p className="app__interpret-hint" role="status">
-                  {mode === 'upload_recording' && active && interpretStatus === 'processing' && (
+                  {mode === 'record_meeting' && interpretStatus === 'listening' && (
+                    <>Recording meeting — click <strong>Stop</strong> when the call ends. No processing during the call.</>
+                  )}
+                  {mode === 'upload_recording' && active && interpretStatus === 'processing' && minutesOnlySession && (
+                    <>Processing recording for meeting minutes…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  )}
+                  {mode === 'upload_recording' && active && interpretStatus === 'processing' && !minutesOnlySession && (
                     <>Processing upload…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
-                  {mode !== 'upload_recording' && interpretStatus === 'listening' && (
-                    <>{englishTranscriptionSession ? 'Recording meeting audio' : 'Recording continuously'} · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if {englishTranscriptionSession ? 'transcription' : 'translation'} lags.</>
+                  {mode === 'record_meeting' && interpretStatus === 'processing' && (
+                    <>Processing recording…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
                   )}
-                  {mode !== 'upload_recording' && interpretStatus === 'processing' && (
-                    <>{englishTranscriptionSession ? 'Transcribing…' : 'Catching up…'}{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  {mode !== 'upload_recording' && mode !== 'record_meeting' && interpretStatus === 'listening' && (
+                    <>Recording continuously · updates each ~{Math.round(SEGMENT_MS / 60000)} min. Nothing dropped if translation lags.</>
                   )}
-                  {mode === 'upload_recording' && uploadOutcome && !active && (
+                  {mode !== 'upload_recording' && mode !== 'record_meeting' && interpretStatus === 'processing' && (
+                    <>Catching up…{queuedCount > 0 ? ` (${queuedCount} in queue)` : ''}</>
+                  )}
+                  {mode === 'upload_recording' && uploadOutcome && !active && !minutesOnlySession && (
                     <>Upload complete · see translation panel →</>
                   )}
                 </p>
@@ -1283,7 +1408,7 @@ function App() {
               </p>
             )}
 
-            {!englishTranscriptionSession && (
+            {!minutesOnlySession && (
               <div className="app__response">
                 <p className="app__response-hint" aria-hidden="true">
                   Speak in English — translation appears in Burmese for the other person.
@@ -1329,8 +1454,21 @@ function App() {
           </div>
         </aside>
 
-        <section className="app__workspace" aria-label="Translation">
-          {mode === 'upload_recording' && (active || uploadOutcome || queuedCount > 0) && (
+        <section className="app__workspace" aria-label={minutesOnlySession ? 'Meeting minutes' : 'Translation'}>
+          {minutesOnlySession && (active || minutesStatus === 'loading') && minutesStatus !== 'success' && (
+            <div className="app__upload-progress" role="status">
+              <p className="app__upload-progress-title">
+                {mode === 'record_meeting' && interpretStatus === 'listening'
+                  ? 'Recording your meeting'
+                  : 'Creating meeting minutes from your recording…'}
+              </p>
+              {sessionStatusLine && (
+                <p className="app__upload-progress-detail">{sessionStatusLine}</p>
+              )}
+            </div>
+          )}
+
+          {mode === 'upload_recording' && !minutesOnlySession && (active || uploadOutcome || queuedCount > 0) && (
             <div className="app__upload-progress" role="status">
               {active && interpretStatus === 'processing' && (
                 <p className="app__upload-progress-title">Working on your recording…</p>
@@ -1355,29 +1493,23 @@ function App() {
             </div>
           )}
 
+          {!minutesOnlySession && (
           <ConversationView
             translationText={visibleSegments.map((s) => s.text).join('\n')}
             isPlayingTts={isPlayingTts}
-            testingMode={testingMode || mode === 'upload_recording' || englishTranscriptionSession}
+            testingMode={testingMode || mode === 'upload_recording'}
             segments={visibleSegments}
-            panelLabel={englishTranscriptionSession ? 'Transcript' : 'Translation'}
-            placeholder={englishTranscriptionSession ? 'Transcript will appear here…' : 'Translation will appear here…'}
-            englishTranscriptionOnly={englishTranscriptionSession}
           />
+          )}
 
-          {translationSegments.length > 0 && !active && (
+          {minutesOnlySession && !active && minutesStatus === 'idle' && !minutesResult && (
+            <div className="app__upload-progress" role="status">
+              <p className="app__upload-progress-title">Meeting minutes will appear here after you stop recording.</p>
+            </div>
+          )}
+
+          {translationSegments.length > 0 && !active && !minutesOnlySession && (
             <div className="app__testing-actions">
-              {englishTranscriptionSession && (
-                <motion.button
-                  type="button"
-                  className="app__btn app__btn--secondary"
-                  disabled={!translationSegments.some((s) => s.text.trim() !== '')}
-                  onClick={downloadTranscript}
-                  whileTap={{ scale: 0.98 }}
-                >
-                  Download transcript
-                </motion.button>
-              )}
               <motion.button
                 type="button"
                 className="app__btn app__btn--start"
@@ -1455,7 +1587,9 @@ function App() {
             <div className="app__clean-result">
               <h3 className="app__clean-result-title">Meeting minutes</h3>
               <p className="app__clean-result-hint">
-                Structured from your bilingual segments
+                {minutesOnlySession
+                  ? 'Generated from your meeting recording'
+                  : 'Structured from your bilingual segments'}
                 {useGlossaryAndBriefing ? ' using glossary and briefing.' : '.'}
               </p>
 

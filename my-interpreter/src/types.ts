@@ -1,6 +1,6 @@
 export type CaptureMode =
   | 'desktop'
-  | 'english_meeting'
+  | 'record_meeting'
   | 'rooted_android'
   | 'face_to_face'
   | 'upload_recording';

@@ -9,6 +9,8 @@ registerSW({
   immediate: true,
   onNeedRefresh() {
     window.dispatchEvent(new CustomEvent(APP_UPDATE_EVENT))
+    // Stale precached index.html can reference removed JS chunks → blank screen.
+    window.location.reload()
   },
 })
 

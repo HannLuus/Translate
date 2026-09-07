@@ -49,8 +49,22 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        runtimeCaching: [],
+        // Do not precache index.html — it embeds hashed JS names that change every deploy.
+        // Serving a stale shell causes a blank page when old /assets/*.js 404.
+        globPatterns: ['**/*.{js,css,ico,png,svg,woff2,webmanifest}'],
+        navigateFallback: null,
+        cleanupOutdatedCaches: true,
+        runtimeCaching: [
+          {
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'pages',
+              networkTimeoutSeconds: 5,
+              expiration: { maxEntries: 1, maxAgeSeconds: 3600 },
+            },
+          },
+        ],
       },
     }),
   ],
